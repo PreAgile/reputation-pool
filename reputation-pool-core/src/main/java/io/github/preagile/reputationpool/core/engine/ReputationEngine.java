@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 the reputation-pool authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.github.preagile.reputationpool.core.engine;
 
 import io.github.preagile.reputationpool.core.domain.FailureType;
@@ -21,10 +36,16 @@ import java.util.Objects;
  * <ul>
  *   <li>A failure lowers the score and increments the consecutive-failure count, but only pushes the
  *       resource into {@code COOLING} once that count reaches {@code coolAfter} — a single blip does
- *       not cool a healthy resource.
+ *       not cool a healthy resource. While a cooldown is still active, further failures keep moving
+ *       the score but never restart the cooldown or repeat the {@code ResourceCooled} event: a
+ *       late-arriving result belongs to the incident already being punished, not to a new one.
  *   <li>Recovery is success-driven: once the cooldown has expired, a success moves {@code COOLING} to
- *       {@code RECOVERING} (probation), and {@code recoverAfter} consecutive successes promote it back
- *       to {@code HEALTHY}.
+ *       {@code RECOVERING} (probation), and {@code recoverAfter} consecutive successes — counted from
+ *       that moment via the cell's {@code consecutiveSuccesses} streak, so successes observed while
+ *       still cooling cannot shortcut probation — promote it back to {@code HEALTHY}.
+ *   <li>{@code BLOCKLISTED} is terminal here: outcomes still update the score and window (evidence
+ *       for a later release decision), but no state transition or event can leave it — release is an
+ *       explicit act of the pool layer, never a side effect of traffic.
  * </ul>
  *
  * <p>The engine operates on a single cell and never gates selection, blocklists, or routes contexts —
@@ -42,10 +63,12 @@ public final class ReputationEngine {
     private final int recoverAfter;
 
     /**
-     * @param cooldown how long a cooled resource stays excluded
-     * @param windowSize how many recent outcomes to retain
-     * @param coolAfter consecutive failures required before cooling (at least 1)
-     * @param recoverAfter consecutive successes required to leave RECOVERING (1..windowSize)
+     * @param cooldown     how long a cooled resource stays excluded
+     * @param windowSize   how many recent outcomes to retain
+     * @param coolAfter    consecutive failures required before cooling (at least 1)
+     * @param recoverAfter consecutive successes required to leave RECOVERING (at least 1)
+     * @throws NullPointerException if {@code cooldown} is null
+     * @throws IllegalArgumentException if any of the thresholds is below 1
      */
     public ReputationEngine(CooldownPolicy cooldown, int windowSize, int coolAfter, int recoverAfter) {
         this.cooldown = Objects.requireNonNull(cooldown, "cooldown must not be null");
@@ -55,18 +78,22 @@ public final class ReputationEngine {
         if (coolAfter < 1) {
             throw new IllegalArgumentException("coolAfter must be at least 1");
         }
-        if (recoverAfter < 1 || recoverAfter > windowSize) {
-            throw new IllegalArgumentException("recoverAfter must be in [1, windowSize]");
+        if (recoverAfter < 1) {
+            throw new IllegalArgumentException("recoverAfter must be at least 1");
         }
         this.windowSize = windowSize;
         this.coolAfter = coolAfter;
         this.recoverAfter = recoverAfter;
     }
 
-    /** The next cell and any events produced; never null, events may be empty. */
+    /**
+     * The next cell and any events produced; never null, events may be empty.
+     */
     public record Result(ReputationCell cell, List<PoolEvent> events) {}
 
-    /** Applies one outcome to a cell. Pure: the input cell is not mutated. */
+    /**
+     * Applies one outcome to a cell. Pure: the input cell is not mutated.
+     */
     public Result apply(ReputationCell cell, Outcome outcome, Instant now) {
         Objects.requireNonNull(cell, "cell must not be null");
         Objects.requireNonNull(outcome, "outcome must not be null");
@@ -85,10 +112,11 @@ public final class ReputationEngine {
         var builder = cell.toBuilder()
                 .score(score)
                 .consecutiveFailures(consecutiveFailures)
+                .consecutiveSuccesses(0)
                 .window(window)
                 .updatedAt(now);
 
-        if (consecutiveFailures >= coolAfter) {
+        if (shouldCool(cell, consecutiveFailures, now)) {
             Instant until = now.plus(cooldown.cooldownFor(failure.type(), consecutiveFailures));
             ReputationCell next =
                     builder.state(ResourceState.COOLING).cooldownUntil(until).build();
@@ -100,16 +128,29 @@ public final class ReputationEngine {
         return new Result(builder.build(), List.of());
     }
 
+    private boolean shouldCool(ReputationCell cell, int consecutiveFailures, Instant now) {
+        if (cell.state() == ResourceState.BLOCKLISTED) {
+            return false; // terminal: left only by an explicit release, never by traffic
+        }
+        if (cell.state() == ResourceState.COOLING && now.isBefore(cell.cooldownUntil())) {
+            return false; // already being punished for this incident: no extension, no repeat event
+        }
+        return consecutiveFailures >= coolAfter;
+    }
+
     private Result onSuccess(ReputationCell cell, Outcome.Success success, Instant now) {
         double score = clamp(cell.score() + RECOVER_STEP);
         List<Outcome> window = append(cell.window(), success, windowSize);
 
         ResourceState state = cell.state();
+        int streak = cell.consecutiveSuccesses() + 1;
         var events = new ArrayList<PoolEvent>();
+        // BLOCKLISTED matches neither branch below, so it falls through untouched (terminal).
         if (state == ResourceState.COOLING && !now.isBefore(cell.cooldownUntil())) {
             state = ResourceState.RECOVERING;
+            streak = 1; // probation starts here: successes recorded while still cooling do not count
         }
-        if (state == ResourceState.RECOVERING && trailingSuccesses(window) >= recoverAfter) {
+        if (state == ResourceState.RECOVERING && streak >= recoverAfter) {
             state = ResourceState.HEALTHY;
             events.add(new PoolEvent.ResourceRecovered(cell.resourceId(), cell.context(), now));
         }
@@ -117,6 +158,7 @@ public final class ReputationEngine {
         ReputationCell next = cell.toBuilder()
                 .score(score)
                 .consecutiveFailures(0)
+                .consecutiveSuccesses(streak)
                 .window(window)
                 .state(state)
                 .updatedAt(now)
@@ -145,17 +187,5 @@ public final class ReputationEngine {
             next.removeFirst(); // drop the oldest once the window is full
         }
         return next;
-    }
-
-    private static int trailingSuccesses(List<Outcome> window) {
-        int count = 0;
-        for (int i = window.size() - 1; i >= 0; i--) {
-            if (window.get(i) instanceof Outcome.Success) {
-                count++;
-            } else {
-                break;
-            }
-        }
-        return count;
     }
 }
