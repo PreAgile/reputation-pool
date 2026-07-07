@@ -34,6 +34,10 @@ public sealed interface PoolEvent {
             Objects.requireNonNull(at, "at must not be null");
             Objects.requireNonNull(until, "until must not be null");
             Objects.requireNonNull(cause, "cause must not be null");
+            // a cooldown cannot end before it began; also guards against swapping the two Instants
+            if (until.isBefore(at)) {
+                throw new IllegalArgumentException("until must not be before at");
+            }
         }
     }
 

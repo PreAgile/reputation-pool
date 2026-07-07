@@ -76,6 +76,21 @@ class PoolEventTest {
     }
 
     @Test
+    void resourceCooledRejectsUntilBeforeAt() {
+        var until = AT.minusSeconds(1);
+        assertThatThrownBy(() -> new PoolEvent.ResourceCooled(RID, CTX, AT, until, FailureType.BLOCKED))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("until must not be before at");
+    }
+
+    @Test
+    void resourceCooledAllowsZeroLengthCooldown() {
+        // until == at is a degenerate but valid state (immediately-expired cooldown)
+        var event = new PoolEvent.ResourceCooled(RID, CTX, AT, AT, FailureType.SLOW);
+        assertThat(event.until()).isEqualTo(event.at());
+    }
+
+    @Test
     void resourceRecoveredRejectsNullComponents() {
         assertThatThrownBy(() -> new PoolEvent.ResourceRecovered(null, CTX, AT))
                 .isInstanceOf(NullPointerException.class)
