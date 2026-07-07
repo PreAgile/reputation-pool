@@ -47,7 +47,24 @@ dependencies {
 }
 ```
 
-<!-- A minimal embed example lands with the M1 API. -->
+A minimal embed — the whole M1 API is three calls:
+
+```java
+// windowSize 10, cool after 3 consecutive failures, promote back to HEALTHY
+// after 2 consecutive post-cooldown successes
+ReputationEngine engine = new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 3, 2);
+
+ReputationCell cell = ReputationCell.fresh(
+        new ResourceId(ResourceKind.PROXY, "10.0.0.7:8080"),
+        new Context("marketplace-a"),
+        clock.instant()); // inject java.time.Clock — core never reads the wall clock itself
+
+// report each use; apply is pure: (cell, outcome, now) -> next cell + events
+ReputationEngine.Result result = engine.apply(
+        cell, new Outcome.Failure(FailureType.TIMEOUT, Duration.ofSeconds(2)), clock.instant());
+cell = result.cell();
+result.events().forEach(this::publish); // ResourceCooled, ResourceRecovered, ...
+```
 
 ## Core concepts
 
@@ -82,7 +99,7 @@ ArchUnit purity rules. The build provisions JDK 25 automatically via the Foojay 
 
 ## Roadmap
 
-- [ ] **M1 — core decision engine**: domain records, `ReputationEngine`, `AdaptiveCooldownPolicy`; jqwik
+- [x] **M1 — core decision engine**: domain records, `ReputationEngine`, `AdaptiveCooldownPolicy`; jqwik
       invariants + ArchUnit purity gate.
 - [ ] **M2 — concurrency layer**: `Blocklist`, `SelectionStrategy`, `LeaseRegistry`, `ResourcePool` facade;
       32-thread lease-exclusivity tests.
