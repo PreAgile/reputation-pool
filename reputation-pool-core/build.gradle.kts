@@ -5,10 +5,10 @@ plugins {
 
 java {
     toolchain {
-        // Virtual thread 가 synchronized pinning 없이 동작하는 첫 LTS (JEP 491)
+        // First LTS where virtual threads no longer pin the carrier inside synchronized (JEP 491)
         languageVersion = JavaLanguageVersion.of(25)
     }
-    // withSourcesJar()/withJavadocJar() 는 Maven Central publish 붙일 때(L2+) 추가한다.
+    // withSourcesJar()/withJavadocJar() are added when Maven Central publishing lands (L2+).
 }
 
 repositories {
@@ -16,7 +16,7 @@ repositories {
 }
 
 dependencies {
-    // core 는 런타임 의존성 0 (JDK only) — 아래는 전부 테스트 스코프
+    // core has zero runtime dependencies (JDK only); everything below is test scope
     testImplementation(platform("org.junit:junit-bom:6.1.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
@@ -34,7 +34,7 @@ tasks.test {
 
 spotless {
     java {
-        // 2.71.0+ 부터 JDK 25 javac 내부 API 호환 (그 이하는 NoSuchMethodError)
+        // 2.71.0+ is compatible with JDK 25 javac internals (older versions throw NoSuchMethodError)
         palantirJavaFormat("2.73.0")
         removeUnusedImports()
         trimTrailingWhitespace()
