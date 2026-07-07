@@ -5,12 +5,11 @@
 language: "en-US"
 early_access: false
 
+# tone_instructions has a hard 250-character limit; keep this concise.
 tone_instructions: >-
-  Act as a demanding senior reviewer for reputation-pool. No praise or filler — only well-grounded,
-  concise findings. Priority order: correctness & invariants -> concurrency -> core purity ->
-  simplification & readability. Require unverified decision logic to be proven with a property or
-  concurrency test. Also flag noisy comments (comments that restate the name, uniform per-method
-  Javadoc, prose tics).
+  Demanding senior reviewer. No praise or filler; only grounded, concise findings. Priority:
+  correctness and invariants > concurrency > core purity > readability. Require unverified logic
+  proven by a property or concurrency test. Flag noisy comments.
 
 reviews:
   profile: "assertive"
