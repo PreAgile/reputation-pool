@@ -16,7 +16,6 @@
 package io.github.preagile.reputationpool.core;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
-import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.noClasses;
 
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.junit.AnalyzeClasses;
@@ -26,6 +25,9 @@ import com.tngtech.archunit.lang.ArchRule;
 /**
  * The design principles of this module, as executable rules — a violating import fails the build,
  * so the architecture cannot erode one convenient dependency at a time.
+ *
+ * <p>Every rule is an allowlist ("may depend only on"), not a denylist of known offenders: a
+ * package added to core later is excluded by default instead of silently permitted.
  */
 @AnalyzeClasses(
         packages = "io.github.preagile.reputationpool.core",
@@ -37,6 +39,13 @@ class ArchitectureTest {
      * and this module. This is what keeps decisions pure functions, invariants property-testable,
      * and production incidents reproducible by replaying inputs; I/O belongs behind {@code port}
      * interfaces implemented in outer modules.
+     *
+     * <p>Deliberately {@code java..} only, not {@code javax..}: a few JDK APIs do live there
+     * (crypto, TLS), but the same prefix also covers external Java EE jars (servlet, persistence,
+     * annotation), so allowing it wholesale would reopen the hole this rule exists to close. If
+     * core ever needs a {@code javax} JDK API, widen the list by that one package in a reviewed
+     * change — a loud build failure followed by a conscious one-line widening is this gate working
+     * as intended.
      */
     @ArchTest
     static final ArchRule CORE_DEPENDS_ONLY_ON_THE_JDK_AND_ITSELF = classes()
@@ -45,28 +54,29 @@ class ArchitectureTest {
             .resideInAnyPackage("java..", "io.github.preagile.reputationpool.core..");
 
     /**
-     * The dependency arrow points inward: {@code domain} is the innermost vocabulary and must not
-     * know the logic ({@code engine}) or the I/O boundary ({@code port}) built on top of it.
+     * The dependency arrow points inward: {@code domain} is the innermost vocabulary and may
+     * depend only on the JDK and itself — in particular never on the logic ({@code engine}) or the
+     * I/O boundary ({@code port}) built on top of it.
      */
     @ArchTest
-    static final ArchRule DOMAIN_IS_THE_INNERMOST_LAYER = noClasses()
+    static final ArchRule DOMAIN_IS_THE_INNERMOST_LAYER = classes()
             .that()
             .resideInAPackage("..core.domain..")
             .should()
-            .dependOnClassesThat()
-            .resideInAnyPackage("..core.engine..", "..core.port..");
+            .onlyDependOnClassesThat()
+            .resideInAnyPackage("java..", "..core.domain..");
 
     /**
-     * {@code port} declares what the outside world must provide in domain terms; it must not reach
-     * into the decision logic. Empty matches are allowed because the package arrives with the
-     * concurrency layer — the rule arms itself the moment the first port interface exists.
+     * {@code port} declares what the outside world must provide, in domain terms only — never the
+     * decision logic in {@code engine}. Empty matches are allowed because the package arrives with
+     * the concurrency layer — the rule arms itself the moment the first port interface exists.
      */
     @ArchTest
-    static final ArchRule PORT_KNOWS_ONLY_THE_DOMAIN = noClasses()
+    static final ArchRule PORT_KNOWS_ONLY_THE_DOMAIN = classes()
             .that()
             .resideInAPackage("..core.port..")
             .should()
-            .dependOnClassesThat()
-            .resideInAPackage("..core.engine..")
+            .onlyDependOnClassesThat()
+            .resideInAnyPackage("java..", "..core.domain..", "..core.port..")
             .allowEmptyShould(true);
 }
