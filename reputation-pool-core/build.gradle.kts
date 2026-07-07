@@ -1,6 +1,6 @@
 plugins {
     `java-library`
-    id("com.diffplug.spotless") version "7.2.1"
+    id("com.diffplug.spotless") version "8.8.0"
 }
 
 java {
