@@ -34,7 +34,8 @@ tasks.test {
 
 spotless {
     java {
-        palantirJavaFormat()
+        // 2.71.0+ 부터 JDK 25 javac 내부 API 호환 (그 이하는 NoSuchMethodError)
+        palantirJavaFormat("2.73.0")
         removeUnusedImports()
         trimTrailingWhitespace()
         endWithNewline()
