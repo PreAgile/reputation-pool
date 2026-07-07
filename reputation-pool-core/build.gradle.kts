@@ -26,6 +26,9 @@ dependencies {
     testImplementation("net.jqwik:jqwik:1.10.1")
     testImplementation("org.assertj:assertj-core:3.27.7")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.4.2")
+    // ArchUnit pulls in slf4j-api with no provider on the test classpath, so every run prints the
+    // "No SLF4J providers were found" NOP warning. slf4j-nop is that provider (a no-op sink).
+    testRuntimeOnly("org.slf4j:slf4j-nop:2.0.17")
 
     // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik run on it). 1.2.3 is the
     // current release and requires pitest core >= 1.19.4, satisfied by the version below.
@@ -37,6 +40,18 @@ tasks.test {
     testLogging {
         events("failed", "skipped")
     }
+}
+
+tasks.withType<Javadoc>().configureEach {
+    // `all,-missing` gates on broken structure (dangling @link/@throws, malformed HTML) without
+    // demanding a doc comment on every record component/accessor — that would be noise, not safety.
+    (options as StandardJavadocDocletOptions).addBooleanOption("Xdoclint:all,-missing", true)
+}
+
+// Make Javadoc part of the `build`/CI gate so a broken doc reference fails the build, not just
+// `./gradlew javadoc`. `check` is what `build` depends on.
+tasks.named("check") {
+    dependsOn(tasks.named("javadoc"))
 }
 
 // Mutation testing is an on-demand quality probe (`./gradlew pitest`), not part of the
@@ -58,5 +73,28 @@ spotless {
         removeUnusedImports()
         trimTrailingWhitespace()
         endWithNewline()
+        // Standard short Apache-2.0 header, stamped on every .java file and enforced by
+        // `spotlessCheck` (part of `build`). No copyright holder is declared in LICENSE/README,
+        // so attribute to the project's authors. Fixed year, not a dynamic one, so the header is
+        // reproducible and does not churn every January.
+        licenseHeader(
+            """
+            /*
+             * Copyright 2026 the reputation-pool authors
+             *
+             * Licensed under the Apache License, Version 2.0 (the "License");
+             * you may not use this file except in compliance with the License.
+             * You may obtain a copy of the License at
+             *
+             *     https://www.apache.org/licenses/LICENSE-2.0
+             *
+             * Unless required by applicable law or agreed to in writing, software
+             * distributed under the License is distributed on an "AS IS" BASIS,
+             * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+             * See the License for the specific language governing permissions and
+             * limitations under the License.
+             */
+            """
+                .trimIndent())
     }
 }
