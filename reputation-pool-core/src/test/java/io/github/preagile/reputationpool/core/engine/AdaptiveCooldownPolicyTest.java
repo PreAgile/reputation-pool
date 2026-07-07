@@ -1,6 +1,7 @@
 package io.github.preagile.reputationpool.core.engine;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import io.github.preagile.reputationpool.core.domain.FailureType;
@@ -98,5 +99,14 @@ class AdaptiveCooldownPolicyTest {
         var current = policy.cooldownFor(type, consecutive);
         var next = policy.cooldownFor(type, consecutive + 1);
         assertThat(next).isGreaterThanOrEqualTo(current);
+    }
+
+    // Guards the reason MAX_ALLOWED_EXPONENT is bounded: a cooldown must stay convertible to nanos,
+    // since downstream schedulers call Duration.toNanos() (which throws above Long.MAX_VALUE ns).
+    @Property
+    void cooldownAlwaysConvertsToNanosWithoutOverflow(
+            @ForAll FailureType type, @ForAll @IntRange(min = 1, max = 100_000) int consecutive) {
+        var maxCap = new AdaptiveCooldownPolicy(AdaptiveCooldownPolicy.MAX_ALLOWED_EXPONENT);
+        assertThatCode(() -> maxCap.cooldownFor(type, consecutive).toNanos()).doesNotThrowAnyException();
     }
 }

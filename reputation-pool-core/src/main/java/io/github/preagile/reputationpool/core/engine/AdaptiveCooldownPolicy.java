@@ -19,10 +19,12 @@ public final class AdaptiveCooldownPolicy implements CooldownPolicy {
     public static final int DEFAULT_MAX_EXPONENT = 6;
 
     /**
-     * Largest exponent cap that may be configured. Bounded so {@code base × 2^exponent} stays well
-     * within a {@code long} even for the largest base (3600s).
+     * Largest exponent cap that may be configured. Bounded at 21 so the resulting duration stays
+     * convertible to nanoseconds: {@code Duration.toNanos()} throws above {@code Long.MAX_VALUE} ns
+     * (~292 years), and downstream schedulers call it. With the largest base (3600s),
+     * {@code 3600 × 2^21 ≈ 239 years} is the largest cooldown that still fits.
      */
-    public static final int MAX_ALLOWED_EXPONENT = 30;
+    public static final int MAX_ALLOWED_EXPONENT = 21;
 
     private final int maxExponent;
 
