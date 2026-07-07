@@ -35,10 +35,16 @@ public record ReputationCell(
         Objects.requireNonNull(state, "state must not be null");
         Objects.requireNonNull(cooldownUntil, "cooldownUntil must not be null");
         Objects.requireNonNull(updatedAt, "updatedAt must not be null");
+        Objects.requireNonNull(window, "window must not be null");
+        // NaN/Infinity is not out-of-policy-range but not-a-number; reject it so it can't
+        // silently corrupt comparisons and ordering downstream.
+        if (!Double.isFinite(score)) {
+            throw new IllegalArgumentException("score must be finite");
+        }
         if (consecutiveFailures < 0) {
             throw new IllegalArgumentException("consecutiveFailures must not be negative");
         }
-        // defensive, immutable copy; also rejects a null list or null elements
+        // defensive, immutable copy; also rejects null elements
         window = List.copyOf(window);
     }
 

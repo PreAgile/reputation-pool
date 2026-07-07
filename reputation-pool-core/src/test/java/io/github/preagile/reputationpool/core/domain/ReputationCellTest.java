@@ -82,11 +82,14 @@ class ReputationCellTest {
     void rejectsNullComponents() {
         assertThatThrownBy(() ->
                         new ReputationCell(null, CTX, 0.0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
-                .isInstanceOf(NullPointerException.class);
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("resourceId");
         assertThatThrownBy(() -> new ReputationCell(RID, CTX, 0.0, 0, null, ResourceState.HEALTHY, Instant.EPOCH, NOW))
-                .isInstanceOf(NullPointerException.class);
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("window");
         assertThatThrownBy(() -> new ReputationCell(RID, CTX, 0.0, 0, List.of(), null, Instant.EPOCH, NOW))
-                .isInstanceOf(NullPointerException.class);
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("state");
     }
 
     @Test
@@ -94,5 +97,15 @@ class ReputationCellTest {
         assertThatThrownBy(() ->
                         new ReputationCell(RID, CTX, 0.0, -1, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
                 .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsNonFiniteScore() {
+        for (double bad : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
+            assertThatThrownBy(() ->
+                            new ReputationCell(RID, CTX, bad, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("finite");
+        }
     }
 }
