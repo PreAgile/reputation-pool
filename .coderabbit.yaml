@@ -1,0 +1,71 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit configuration for reputation-pool.
+# Reviews are in Korean (formal). The project's design principles are enforced as review guidance.
+
+language: "ko-KR"
+early_access: false
+
+tone_instructions: >-
+  reputation-pool 의 깐깐한 시니어 리뷰어. 한국어 존댓말, 칭찬·아부 없이 근거 있는 지적만 간결하게.
+  우선순위: 정확성·불변식 → 동시성 → core 순수성 → 단순화·가독성.
+  검증 안 된 판정 로직은 property 또는 동시성 테스트로 증명을 요구하세요.
+  잡음 주석(이름을 반복하는 주석, 모든 메서드에 균일하게 달린 doc, 산문 틱)도 지적하세요.
+
+reviews:
+  profile: "assertive"
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - "main"
+
+  # 빌드 산출물·래퍼는 리뷰 제외
+  path_filters:
+    - "!**/build/**"
+    - "!**/.gradle/**"
+    - "!**/gradle/wrapper/**"
+
+  path_instructions:
+    - path: "reputation-pool-core/src/main/**/*.java"
+      instructions: >-
+        core 는 순수 Java(JDK only)여야 합니다. Spring/Netty/JDBC/gRPC 등 프레임워크 import 가
+        들어오면 지적하세요(경계는 ArchUnit 이 강제하지만 리뷰에서도 확인). 판정 로직은 부수효과 없는
+        순수 함수인지, 도메인 상태는 불변(record)인지, 시간은 주입된 Clock 으로만 얻는지
+        (직접 now()/System.currentTimeMillis() 금지) 점검하세요. 불변식은 if 문 흩뿌리기가 아니라
+        생성자(compact constructor)나 타입으로 강제됐는지 확인하세요.
+        주석 규율도 점검: 이름을 반복하는 주석, 균일한 javadoc, 산문 틱(과한 엠대시·별표강조)은
+        잡음으로 삭제 제안. 살릴 주석은 비직관적 "왜"(트레이드오프·함정·외부 제약)뿐입니다.
+
+    - path: "**/engine/**"
+      instructions: >-
+        판정 엔진입니다. (1) apply(...) 계열이 입력 셀을 변경하지 않고 새 셀을 반환하는 순수 함수인지.
+        (2) 점수가 항상 유계이고, 성공 시 회복이 단조인지, 한 컨텍스트의 실패가 다른 컨텍스트 셀을
+        오염시키지 않는지 — 이 불변식들이 property 테스트로 검증됐는지 확인하세요.
+        (3) sealed Outcome / enum FailureType 에 대한 switch 가 default 없이 exhaustive 한지.
+
+    - path: "**/{pool,lease,blocklist}/**"
+      instructions: >-
+        동시성 경로입니다. (1) 공유 상태 갱신이 ConcurrentHashMap.compute()/putIfAbsent 등
+        원자 연산으로 이뤄지는지, check-then-act 경합이 없는지. (2) 리스 배타성(리소스 1개 = 동시 1명)이
+        보장되는지, 죽은 소유자 회수 경로가 있는지. (3) 이 성질들이 다중 스레드 테스트로 실제 경합을
+        재현해 검증됐는지 확인하세요.
+
+    - path: "**/port/**"
+      instructions: >-
+        core 의 I/O 경계(인터페이스)입니다. core 가 구현이 아니라 인터페이스에만 의존하는지,
+        저장/관측/프로브 세부사항이 core 로 새어들지 않는지 확인하세요.
+
+    - path: "**/src/test/**"
+      instructions: >-
+        테스트입니다. (1) 불변식은 property 테스트(jqwik)로, 동시성은 N스레드로 실제 경합을 재현했는지.
+        (2) 시간 의존 로직은 Clock.fixed() 로 결정론적으로 검증했는지.
+        (3) "그럴듯하지만 아무것도 검증하지 않는" 동어반복 테스트를 지적하세요.
+
+chat:
+  auto_reply: true

@@ -1,0 +1,45 @@
+name: Feature request
+description: Suggest an enhancement or new capability
+labels: ["type: enhancement", "status: needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Please describe the problem first, then the proposal. Features that keep `core` pure and
+        dependency-free are easier to accept.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what makes it hard today?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What should the API or behavior look like?
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer does this affect?
+      options:
+        - core (domain / engine / port)
+        - adapters
+        - server (gRPC / persistence / observability)
+        - build / CI / docs
+        - not sure
+    validations:
+      required: true
