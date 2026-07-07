@@ -17,7 +17,7 @@ repositories {
 
 dependencies {
     // core 는 런타임 의존성 0 (JDK only) — 아래는 전부 테스트 스코프
-    testImplementation(platform("org.junit:junit-bom:5.14.0"))
+    testImplementation(platform("org.junit:junit-bom:6.1.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("net.jqwik:jqwik:1.9.3")
