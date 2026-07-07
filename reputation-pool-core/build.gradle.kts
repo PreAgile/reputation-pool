@@ -39,6 +39,18 @@ tasks.test {
     }
 }
 
+tasks.withType<Javadoc>().configureEach {
+    // `all,-missing` gates on broken structure (dangling @link/@throws, malformed HTML) without
+    // demanding a doc comment on every record component/accessor — that would be noise, not safety.
+    (options as StandardJavadocDocletOptions).addBooleanOption("Xdoclint:all,-missing", true)
+}
+
+// Make Javadoc part of the `build`/CI gate so a broken doc reference fails the build, not just
+// `./gradlew javadoc`. `check` is what `build` depends on.
+tasks.named("check") {
+    dependsOn(tasks.named("javadoc"))
+}
+
 // Mutation testing is an on-demand quality probe (`./gradlew pitest`), not part of the
 // `build`/CI gate — it is far slower and is used to check that tests actually have teeth.
 pitest {
@@ -58,5 +70,28 @@ spotless {
         removeUnusedImports()
         trimTrailingWhitespace()
         endWithNewline()
+        // Standard short Apache-2.0 header, stamped on every .java file and enforced by
+        // `spotlessCheck` (part of `build`). No copyright holder is declared in LICENSE/README,
+        // so attribute to the project's authors. Fixed year, not a dynamic one, so the header is
+        // reproducible and does not churn every January.
+        licenseHeader(
+            """
+            /*
+             * Copyright 2026 the reputation-pool authors
+             *
+             * Licensed under the Apache License, Version 2.0 (the "License");
+             * you may not use this file except in compliance with the License.
+             * You may obtain a copy of the License at
+             *
+             *     https://www.apache.org/licenses/LICENSE-2.0
+             *
+             * Unless required by applicable law or agreed to in writing, software
+             * distributed under the License is distributed on an "AS IS" BASIS,
+             * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+             * See the License for the specific language governing permissions and
+             * limitations under the License.
+             */
+            """
+                .trimIndent())
     }
 }

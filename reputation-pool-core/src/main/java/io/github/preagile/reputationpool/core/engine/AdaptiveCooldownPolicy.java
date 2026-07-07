@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 the reputation-pool authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.github.preagile.reputationpool.core.engine;
 
 import io.github.preagile.reputationpool.core.domain.FailureType;
@@ -28,10 +43,19 @@ public final class AdaptiveCooldownPolicy implements CooldownPolicy {
 
     private final int maxExponent;
 
+    /** Creates a policy whose backoff factor tops out at {@link #DEFAULT_MAX_EXPONENT}. */
     public AdaptiveCooldownPolicy() {
         this(DEFAULT_MAX_EXPONENT);
     }
 
+    /**
+     * Creates a policy with a configurable exponent cap.
+     *
+     * @param maxExponent the largest backoff exponent, capping growth at {@code 2^maxExponent}
+     * @throws IllegalArgumentException if {@code maxExponent} is outside {@code [0,
+     *     MAX_ALLOWED_EXPONENT]} — above the cap the cooldown could overflow {@code Duration}'s
+     *     nanosecond range (see {@link #MAX_ALLOWED_EXPONENT})
+     */
     public AdaptiveCooldownPolicy(int maxExponent) {
         if (maxExponent < 0 || maxExponent > MAX_ALLOWED_EXPONENT) {
             throw new IllegalArgumentException("maxExponent must be in [0, " + MAX_ALLOWED_EXPONENT + "]");
@@ -43,6 +67,13 @@ public final class AdaptiveCooldownPolicy implements CooldownPolicy {
         return maxExponent;
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * @throws NullPointerException if {@code type} is null
+     * @throws IllegalArgumentException if {@code consecutiveFailures} is less than 1 — the curve is
+     *     defined only for a resource that has actually failed at least once
+     */
     @Override
     public Duration cooldownFor(FailureType type, int consecutiveFailures) {
         Objects.requireNonNull(type, "type must not be null");

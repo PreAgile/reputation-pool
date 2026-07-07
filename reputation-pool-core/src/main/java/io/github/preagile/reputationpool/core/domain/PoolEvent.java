@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 the reputation-pool authors
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     https://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package io.github.preagile.reputationpool.core.domain;
 
 import java.time.Instant;
@@ -28,6 +43,11 @@ public sealed interface PoolEvent {
     /** A resource entered {@code COOLING} for a context until {@code until}, triggered by {@code cause}. */
     record ResourceCooled(ResourceId resource, Context context, Instant at, Instant until, FailureType cause)
             implements PoolEvent {
+        /**
+         * @throws NullPointerException if any component is null
+         * @throws IllegalArgumentException if {@code until} is before {@code at} — a cooldown
+         *     cannot end before it began
+         */
         public ResourceCooled {
             Objects.requireNonNull(resource, "resource must not be null");
             Objects.requireNonNull(context, "context must not be null");
@@ -43,6 +63,9 @@ public sealed interface PoolEvent {
 
     /** A resource was promoted back to {@code HEALTHY} for a context. */
     record ResourceRecovered(ResourceId resource, Context context, Instant at) implements PoolEvent {
+        /**
+         * @throws NullPointerException if any component is null
+         */
         public ResourceRecovered {
             Objects.requireNonNull(resource, "resource must not be null");
             Objects.requireNonNull(context, "context must not be null");
