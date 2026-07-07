@@ -37,6 +37,7 @@ class ReputationCellTest {
         assertThat(cell.context()).isEqualTo(CTX);
         assertThat(cell.score()).isZero();
         assertThat(cell.consecutiveFailures()).isZero();
+        assertThat(cell.consecutiveSuccesses()).isZero();
         assertThat(cell.window()).isEmpty();
         assertThat(cell.state()).isEqualTo(ResourceState.HEALTHY);
         assertThat(cell.cooldownUntil()).isEqualTo(Instant.EPOCH); // EPOCH == "not cooling"
@@ -64,6 +65,7 @@ class ReputationCellTest {
         var cooled = ReputationCell.fresh(RID, CTX, NOW).toBuilder()
                 .score(-30.0)
                 .consecutiveFailures(3)
+                .consecutiveSuccesses(0)
                 .state(ResourceState.COOLING)
                 .cooldownUntil(until)
                 .updatedAt(NOW.plusSeconds(1))
@@ -96,13 +98,14 @@ class ReputationCellTest {
     @Test
     void rejectsNullComponents() {
         assertThatThrownBy(() ->
-                        new ReputationCell(null, CTX, 0.0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
+                        new ReputationCell(null, CTX, 0.0, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("resourceId");
-        assertThatThrownBy(() -> new ReputationCell(RID, CTX, 0.0, 0, null, ResourceState.HEALTHY, Instant.EPOCH, NOW))
+        assertThatThrownBy(
+                        () -> new ReputationCell(RID, CTX, 0.0, 0, 0, null, ResourceState.HEALTHY, Instant.EPOCH, NOW))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("window");
-        assertThatThrownBy(() -> new ReputationCell(RID, CTX, 0.0, 0, List.of(), null, Instant.EPOCH, NOW))
+        assertThatThrownBy(() -> new ReputationCell(RID, CTX, 0.0, 0, 0, List.of(), null, Instant.EPOCH, NOW))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("state");
     }
@@ -110,15 +113,22 @@ class ReputationCellTest {
     @Test
     void rejectsNegativeConsecutiveFailures() {
         assertThatThrownBy(() ->
-                        new ReputationCell(RID, CTX, 0.0, -1, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
+                        new ReputationCell(RID, CTX, 0.0, -1, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsNegativeConsecutiveSuccesses() {
+        assertThatThrownBy(() ->
+                        new ReputationCell(RID, CTX, 0.0, 0, -1, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void rejectsNonFiniteScore() {
         for (double bad : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
-            assertThatThrownBy(() ->
-                            new ReputationCell(RID, CTX, bad, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
+            assertThatThrownBy(() -> new ReputationCell(
+                            RID, CTX, bad, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("finite");
         }

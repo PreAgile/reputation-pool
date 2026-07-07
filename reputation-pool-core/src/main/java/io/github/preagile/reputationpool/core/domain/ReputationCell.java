@@ -26,19 +26,21 @@ import java.util.Objects;
  * <p>It is an immutable record: the engine's decisions are pure functions that return a <em>new</em>
  * cell, and concurrency at the boundary swaps a single reference so readers never see a torn state.
  *
- * <p>Two of the fields are unbounded running values ({@code score}, {@code consecutiveFailures}) that
- * the engine advances over the resource's whole life, while {@code window} is a bounded slice of the
- * most recent outcomes used for computations that need actual recent history (p95 latency, trailing
- * successes). The window's size cap is a policy owned by the engine; this type only guarantees the
- * stored window is a non-null immutable copy. {@code cooldownUntil} uses {@link Instant#EPOCH} as the
- * "not cooling" sentinel, so a plain time comparison ({@code now.isBefore(cooldownUntil)}) is always
- * false for a fresh cell.
+ * <p>Three of the fields are unbounded running values ({@code score}, {@code consecutiveFailures},
+ * {@code consecutiveSuccesses}) that the engine advances over the resource's whole life — the two
+ * streak counters drive the state transitions (cooling and recovery respectively) — while
+ * {@code window} is a bounded slice of the most recent outcomes used for computations that need
+ * actual recent history (p95 latency). The window's size cap is a policy owned by the engine; this
+ * type only guarantees the stored window is a non-null immutable copy. {@code cooldownUntil} uses
+ * {@link Instant#EPOCH} as the "not cooling" sentinel, so a plain time comparison
+ * ({@code now.isBefore(cooldownUntil)}) is always false for a fresh cell.
  */
 public record ReputationCell(
         ResourceId resourceId,
         Context context,
         double score,
         int consecutiveFailures,
+        int consecutiveSuccesses,
         List<Outcome> window,
         ResourceState state,
         Instant cooldownUntil,
@@ -46,8 +48,8 @@ public record ReputationCell(
 
     /**
      * @throws NullPointerException if any field, or any element of {@code window}, is null
-     * @throws IllegalArgumentException if {@code score} is not finite (NaN/Infinity), or
-     *     {@code consecutiveFailures} is negative
+     * @throws IllegalArgumentException if {@code score} is not finite (NaN/Infinity), or either
+     *     streak counter ({@code consecutiveFailures}, {@code consecutiveSuccesses}) is negative
      */
     public ReputationCell {
         Objects.requireNonNull(resourceId, "resourceId must not be null");
@@ -64,13 +66,16 @@ public record ReputationCell(
         if (consecutiveFailures < 0) {
             throw new IllegalArgumentException("consecutiveFailures must not be negative");
         }
+        if (consecutiveSuccesses < 0) {
+            throw new IllegalArgumentException("consecutiveSuccesses must not be negative");
+        }
         // defensive, immutable copy; also rejects null elements
         window = List.copyOf(window);
     }
 
     /** The initial cell for a resource first seen in a context: neutral, healthy, never cooled. */
     public static ReputationCell fresh(ResourceId resourceId, Context context, Instant now) {
-        return new ReputationCell(resourceId, context, 0.0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, now);
+        return new ReputationCell(resourceId, context, 0.0, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, now);
     }
 
     /**
@@ -88,6 +93,7 @@ public record ReputationCell(
         private final Context context;
         private double score;
         private int consecutiveFailures;
+        private int consecutiveSuccesses;
         private List<Outcome> window;
         private ResourceState state;
         private Instant cooldownUntil;
@@ -98,6 +104,7 @@ public record ReputationCell(
             this.context = cell.context;
             this.score = cell.score;
             this.consecutiveFailures = cell.consecutiveFailures;
+            this.consecutiveSuccesses = cell.consecutiveSuccesses;
             this.window = cell.window;
             this.state = cell.state;
             this.cooldownUntil = cell.cooldownUntil;
@@ -111,6 +118,11 @@ public record ReputationCell(
 
         public Builder consecutiveFailures(int consecutiveFailures) {
             this.consecutiveFailures = consecutiveFailures;
+            return this;
+        }
+
+        public Builder consecutiveSuccesses(int consecutiveSuccesses) {
+            this.consecutiveSuccesses = consecutiveSuccesses;
             return this;
         }
 
@@ -136,7 +148,15 @@ public record ReputationCell(
 
         public ReputationCell build() {
             return new ReputationCell(
-                    resourceId, context, score, consecutiveFailures, window, state, cooldownUntil, updatedAt);
+                    resourceId,
+                    context,
+                    score,
+                    consecutiveFailures,
+                    consecutiveSuccesses,
+                    window,
+                    state,
+                    cooldownUntil,
+                    updatedAt);
         }
     }
 }
