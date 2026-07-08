@@ -101,8 +101,8 @@ ArchUnit purity rules. The build provisions JDK 25 automatically via the Foojay 
 
 - [x] **M1 — core decision engine**: domain records, `ReputationEngine`, `AdaptiveCooldownPolicy`; jqwik
       invariants + ArchUnit purity gate.
-- [ ] **M2 — concurrency layer**: `Blocklist`, `SelectionStrategy`, `LeaseRegistry`, `ResourcePool` facade;
-      32-thread lease-exclusivity tests.
+- [x] **M2 — concurrency layer**: `Blocklist`, `SelectionStrategy`, `LeaseRegistry`, `ResourcePool` facade,
+      and the first `EventSink` port; 32-thread lease-exclusivity tests.
 - [ ] **L1 — adapter demos**: proxy and account adapters driven by the same engine.
 - [ ] **L2 — gRPC advisor**: `acquire / report / renew / release` + event stream; publish core to Maven Central.
 - [ ] **L3 — persistence**: snapshot + audit trail behind the `ResourceStore` port.
