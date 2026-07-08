@@ -99,6 +99,16 @@ class BlocklistTest {
     }
 
     @Test
+    void reblockingWithAnEarlierUntilShortensTheBlock() {
+        var late = NOW.plusSeconds(3600);
+        var early = NOW.plusSeconds(60);
+        var blocklist = Blocklist.empty().block(RID, late).block(RID, early);
+        // the earlier expiry wins: no longer blocked past it, still blocked before it
+        assertThat(blocklist.isBlocked(RID, NOW.plusSeconds(600))).isFalse();
+        assertThat(blocklist.isBlocked(RID, NOW.plusSeconds(30))).isTrue();
+    }
+
+    @Test
     void blockingOneResourceDoesNotAffectAnother() {
         var blocklist = Blocklist.empty().block(RID, NOW.plusSeconds(60));
         assertThat(blocklist.isBlocked(OTHER, NOW)).isFalse();

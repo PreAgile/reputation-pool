@@ -130,12 +130,22 @@ public record Blocklist(Map<ResourceId, Instant> entries) {
      */
     public Blocklist sweepExpired(Instant now) {
         Objects.requireNonNull(now, "now must not be null");
+        boolean hasExpired = false;
+        for (Instant until : entries.values()) {
+            if (!now.isBefore(until)) {
+                hasExpired = true;
+                break;
+            }
+        }
+        if (!hasExpired) {
+            return this; // nothing expired (or empty): the value is unchanged
+        }
         var next = new HashMap<ResourceId, Instant>();
         for (var entry : entries.entrySet()) {
             if (now.isBefore(entry.getValue())) {
                 next.put(entry.getKey(), entry.getValue());
             }
         }
-        return next.size() == entries.size() ? this : new Blocklist(next);
+        return new Blocklist(next);
     }
 }

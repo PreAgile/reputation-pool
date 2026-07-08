@@ -18,8 +18,9 @@
  * the blocklist, selection strategy, lease registry, and the pool facade over them.
  *
  * <p>State here stays immutable, as in {@code domain}: each value returns a new instance on change.
- * Concurrency is confined to atomic operations at the boundary — an {@code AtomicReference} swap for
- * a whole-snapshot value, or a concurrent-map compute for per-key state — never to locks scattered
- * through the logic. The immutable value carries the correctness; the boundary carries the atomicity.
+ * Concurrency will be confined to atomic operations at the boundary — an {@code AtomicReference} swap
+ * for a whole-snapshot value, or a concurrent-map compute for per-key state — never to locks scattered
+ * through the logic, so the immutable value carries the correctness and the boundary carries the
+ * atomicity. The pool facade that establishes this boundary lands later in M2.
  */
 package io.github.preagile.reputationpool.core.pool;
