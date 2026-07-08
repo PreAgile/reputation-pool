@@ -72,4 +72,63 @@ public sealed interface PoolEvent {
             Objects.requireNonNull(at, "at must not be null");
         }
     }
+
+    /**
+     * A resource was isolated from selection until {@code until} ({@link Instant#MAX} for a permanent
+     * block). Resource-global, not per-context: a hard block removes it everywhere.
+     */
+    record ResourceBlocklisted(ResourceId resource, Instant at, Instant until) implements PoolEvent {
+        /**
+         * @throws NullPointerException if any component is null
+         * @throws IllegalArgumentException if {@code until} is before {@code at}
+         */
+        public ResourceBlocklisted {
+            Objects.requireNonNull(resource, "resource must not be null");
+            Objects.requireNonNull(at, "at must not be null");
+            Objects.requireNonNull(until, "until must not be null");
+            if (until.isBefore(at)) {
+                throw new IllegalArgumentException("until must not be before at");
+            }
+        }
+    }
+
+    /** A resource was released from the blocklist and may be selected again. */
+    record ResourceUnblocked(ResourceId resource, Instant at) implements PoolEvent {
+        /**
+         * @throws NullPointerException if any component is null
+         */
+        public ResourceUnblocked {
+            Objects.requireNonNull(resource, "resource must not be null");
+            Objects.requireNonNull(at, "at must not be null");
+        }
+    }
+
+    /** A resource was leased to a caller for a context until {@code until}. */
+    record ResourceLeased(ResourceId resource, Context context, Instant at, Instant until) implements PoolEvent {
+        /**
+         * @throws NullPointerException if any component is null
+         * @throws IllegalArgumentException if {@code until} is before {@code at}
+         */
+        public ResourceLeased {
+            Objects.requireNonNull(resource, "resource must not be null");
+            Objects.requireNonNull(context, "context must not be null");
+            Objects.requireNonNull(at, "at must not be null");
+            Objects.requireNonNull(until, "until must not be null");
+            if (until.isBefore(at)) {
+                throw new IllegalArgumentException("until must not be before at");
+            }
+        }
+    }
+
+    /** A lease on a resource was released back to the pool for a context. */
+    record LeaseReleased(ResourceId resource, Context context, Instant at) implements PoolEvent {
+        /**
+         * @throws NullPointerException if any component is null
+         */
+        public LeaseReleased {
+            Objects.requireNonNull(resource, "resource must not be null");
+            Objects.requireNonNull(context, "context must not be null");
+            Objects.requireNonNull(at, "at must not be null");
+        }
+    }
 }

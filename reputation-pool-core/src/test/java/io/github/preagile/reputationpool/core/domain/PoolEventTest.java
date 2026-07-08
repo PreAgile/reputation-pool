@@ -57,16 +57,26 @@ class PoolEventTest {
 
     @Test
     void exhaustiveSwitchNeedsNoDefault() {
-        // compiles only because PoolEvent is sealed: the two cases are the whole set
+        // compiles only because PoolEvent is sealed: these cases are the whole set
         assertThat(describe(new PoolEvent.ResourceCooled(RID, CTX, AT, AT.plusSeconds(60), FailureType.SLOW)))
                 .isEqualTo("cooled");
         assertThat(describe(new PoolEvent.ResourceRecovered(RID, CTX, AT))).isEqualTo("recovered");
+        assertThat(describe(new PoolEvent.ResourceBlocklisted(RID, AT, AT.plusSeconds(60))))
+                .isEqualTo("blocklisted");
+        assertThat(describe(new PoolEvent.ResourceUnblocked(RID, AT))).isEqualTo("unblocked");
+        assertThat(describe(new PoolEvent.ResourceLeased(RID, CTX, AT, AT.plusSeconds(60))))
+                .isEqualTo("leased");
+        assertThat(describe(new PoolEvent.LeaseReleased(RID, CTX, AT))).isEqualTo("leaseReleased");
     }
 
     private static String describe(PoolEvent event) {
         return switch (event) {
             case PoolEvent.ResourceCooled c -> "cooled";
             case PoolEvent.ResourceRecovered r -> "recovered";
+            case PoolEvent.ResourceBlocklisted b -> "blocklisted";
+            case PoolEvent.ResourceUnblocked u -> "unblocked";
+            case PoolEvent.ResourceLeased l -> "leased";
+            case PoolEvent.LeaseReleased r -> "leaseReleased";
         };
     }
 
@@ -116,5 +126,43 @@ class PoolEventTest {
         assertThatThrownBy(() -> new PoolEvent.ResourceRecovered(RID, CTX, null))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("at");
+    }
+
+    @Test
+    void concurrencyLayerEventsHoldTheirFields() {
+        var until = AT.plusSeconds(3600);
+        var blocklisted = new PoolEvent.ResourceBlocklisted(RID, AT, until);
+        assertThat(blocklisted.resource()).isEqualTo(RID);
+        assertThat(blocklisted.at()).isEqualTo(AT);
+        assertThat(blocklisted.until()).isEqualTo(until);
+
+        var leased = new PoolEvent.ResourceLeased(RID, CTX, AT, until);
+        assertThat(leased.resource()).isEqualTo(RID);
+        assertThat(leased.context()).isEqualTo(CTX);
+        assertThat(leased.until()).isEqualTo(until);
+
+        assertThat(new PoolEvent.ResourceUnblocked(RID, AT).at()).isEqualTo(AT);
+        assertThat(new PoolEvent.LeaseReleased(RID, CTX, AT).context()).isEqualTo(CTX);
+    }
+
+    @Test
+    void concurrencyLayerEventsRejectUntilBeforeAt() {
+        var badUntil = AT.minusSeconds(1);
+        assertThatThrownBy(() -> new PoolEvent.ResourceBlocklisted(RID, AT, badUntil))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("until must not be before at");
+        assertThatThrownBy(() -> new PoolEvent.ResourceLeased(RID, CTX, AT, badUntil))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("until must not be before at");
+    }
+
+    @Test
+    void concurrencyLayerEventsRejectNullComponents() {
+        assertThatThrownBy(() -> new PoolEvent.ResourceBlocklisted(null, AT, AT))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new PoolEvent.ResourceUnblocked(RID, null)).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new PoolEvent.ResourceLeased(RID, null, AT, AT))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new PoolEvent.LeaseReleased(RID, CTX, null)).isInstanceOf(NullPointerException.class);
     }
 }
