@@ -31,15 +31,13 @@ import io.github.preagile.reputationpool.core.engine.ReputationEngine;
 import io.github.preagile.reputationpool.core.pool.ResourcePool;
 import io.github.preagile.reputationpool.core.pool.WeightedRandomSelectionStrategy;
 import io.github.preagile.reputationpool.core.port.EventSink;
+import io.github.preagile.reputationpool.core.testing.SettableClock;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
-import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
-import java.time.ZoneOffset;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 import org.junit.jupiter.api.AfterEach;
@@ -127,33 +125,5 @@ class ProxyPoolIntegrationTest {
         assertThat(pool.acquire(CTX))
                 .as("recovered resource is selectable again")
                 .isPresent();
-    }
-
-    /** A test clock whose instant can be advanced to drive cooldown expiry deterministically. */
-    private static final class SettableClock extends Clock {
-        private volatile Instant now;
-
-        SettableClock(Instant now) {
-            this.now = now;
-        }
-
-        void set(Instant now) {
-            this.now = now;
-        }
-
-        @Override
-        public Instant instant() {
-            return now;
-        }
-
-        @Override
-        public ZoneId getZone() {
-            return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(ZoneId zone) {
-            return this;
-        }
     }
 }

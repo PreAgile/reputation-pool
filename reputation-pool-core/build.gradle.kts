@@ -1,5 +1,8 @@
 plugins {
     `java-library`
+    // Shared test helpers (e.g. SettableClock) live in src/testFixtures and are consumed by this
+    // module's tests automatically and by sibling modules via testFixtures(project(":...-core")).
+    `java-test-fixtures`
     id("com.diffplug.spotless")
     // On-demand mutation testing via `./gradlew pitest`. 1.19.0 is the first release
     // that supports Gradle 9.x; it is deliberately NOT wired into `build` or CI.
