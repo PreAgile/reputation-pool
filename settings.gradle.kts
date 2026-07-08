@@ -6,3 +6,4 @@ plugins {
 rootProject.name = "reputation-pool"
 
 include("reputation-pool-core")
+include("reputation-pool-adapters")

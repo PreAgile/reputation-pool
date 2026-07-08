@@ -1,6 +1,6 @@
 plugins {
     `java-library`
-    id("com.diffplug.spotless") version "8.8.0"
+    id("com.diffplug.spotless")
     // On-demand mutation testing via `./gradlew pitest`. 1.19.0 is the first release
     // that supports Gradle 9.x; it is deliberately NOT wired into `build` or CI.
     id("info.solidsoft.pitest") version "1.19.0"
