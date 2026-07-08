@@ -131,6 +131,25 @@ class WeightedRandomSelectionStrategyTest {
     }
 
     @Test
+    void aTinyExplorationFloorSharpensTowardTheHighestScore() {
+        var high = cell("high", 60.0);
+        var low = cell("low", 40.0);
+        var candidates = List.of(low, high);
+
+        // a near-zero floor makes the weight almost purely score-driven, so the higher score dominates
+        var sharp = new WeightedRandomSelectionStrategy(1e-6);
+        var random = new Random(5);
+        int highHits = 0;
+        int draws = 20_000;
+        for (int i = 0; i < draws; i++) {
+            if (sharp.select(candidates, random).orElseThrow().equals(high)) {
+                highHits++;
+            }
+        }
+        assertThat((double) highHits / draws).isGreaterThan(0.95);
+    }
+
+    @Test
     void rejectsNullArguments() {
         assertThatThrownBy(() -> strategy.select(null, new Random(1)))
                 .isInstanceOf(NullPointerException.class)

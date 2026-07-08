@@ -36,7 +36,9 @@ import java.util.random.RandomGenerator;
  * among an already-eligible set, what matters is which are better than the others right now. A larger
  * floor flattens the distribution toward uniform; a smaller one sharpens the preference for the best.
  *
- * <p>Stateless and therefore thread-safe; the randomness it needs is supplied per call.
+ * <p>Stateless and therefore thread-safe in itself — it has no mutable fields. Under concurrent use,
+ * whether the {@link RandomGenerator} passed to {@link #select} may be shared is the caller's concern:
+ * give each thread its own generator, or pass one that is itself thread-safe.
  */
 public final class WeightedRandomSelectionStrategy implements SelectionStrategy {
 
@@ -96,16 +98,21 @@ public final class WeightedRandomSelectionStrategy implements SelectionStrategy 
 
         double target = random.nextDouble() * totalWeight;
         double cumulative = 0.0;
-        for (ReputationCell candidate : candidates) {
-            cumulative += weight(candidate, minScore);
+        int last = candidates.size() - 1;
+        for (int i = 0; i < last; i++) {
+            cumulative += weight(candidates.get(i), minScore);
             if (target < cumulative) {
-                return Optional.of(candidate);
+                return Optional.of(candidates.get(i));
             }
         }
-        // floating-point guard: accumulated weight can fall a hair short of target
-        return Optional.of(candidates.get(candidates.size() - 1));
+        // The last candidate holds the remaining weight, so it is the natural else rather than a
+        // fallback; this also absorbs any floating-point drift between the summed total and the
+        // running sum, which could otherwise leave target just above the final cumulative.
+        return Optional.of(candidates.get(last));
     }
 
+    // Non-negative by construction: score >= minScore (the batch minimum) and the constructor
+    // guarantees explorationFloor > 0, so every candidate's weight is strictly positive.
     private double weight(ReputationCell candidate, double minScore) {
         return (candidate.score() - minScore) + explorationFloor;
     }
