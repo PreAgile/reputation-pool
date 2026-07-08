@@ -142,11 +142,18 @@ public final class ResourcePool {
             ResourceId chosen = pick.get().resourceId();
             Optional<Lease> lease = leases.tryAcquire(chosen, context, now, leaseTtl);
             if (lease.isPresent()) {
-                events.emit(new PoolEvent.ResourceLeased(
-                        chosen, context, now, lease.get().expiresAt()));
-                return lease;
+                if (blocklist.get().isBlocked(chosen, now)) {
+                    // blocklisted after our snapshot but before the claim: undo it, so a block() that has
+                    // already returned can never be bypassed by an in-flight acquire
+                    leases.release(chosen, lease.get().token());
+                } else {
+                    events.emit(new PoolEvent.ResourceLeased(
+                            chosen, context, now, lease.get().expiresAt()));
+                    return lease;
+                }
             }
-            candidates.removeIf(candidate -> candidate.resourceId().equals(chosen)); // lost the race; try the next
+            candidates.removeIf(
+                    candidate -> candidate.resourceId().equals(chosen)); // lost the race or just blocked; try the next
         }
         return Optional.empty();
     }
@@ -184,7 +191,11 @@ public final class ResourcePool {
      */
     public Optional<Lease> renew(Lease lease) {
         Objects.requireNonNull(lease, "lease must not be null");
-        return leases.renew(lease.resource(), lease.token(), clock.instant(), leaseTtl);
+        Instant now = clock.instant();
+        if (blocklist.get().isBlocked(lease.resource(), now)) {
+            return Optional.empty(); // a blocklisted resource cannot be kept alive; let the lease lapse
+        }
+        return leases.renew(lease.resource(), lease.token(), now, leaseTtl);
     }
 
     /**
@@ -218,7 +229,7 @@ public final class ResourcePool {
         requirePositive(duration);
         Instant now = clock.instant();
         Instant until = now.plus(duration);
-        blocklist.updateAndGet(current -> current.block(resource, until));
+        blocklist.updateAndGet(current -> current.sweepExpired(now).block(resource, until));
         events.emit(new PoolEvent.ResourceBlocklisted(resource, now, until));
     }
 
@@ -231,8 +242,9 @@ public final class ResourcePool {
      */
     public void blockPermanently(ResourceId resource) {
         Objects.requireNonNull(resource, "resource must not be null");
-        blocklist.updateAndGet(current -> current.blockPermanently(resource));
-        events.emit(new PoolEvent.ResourceBlocklisted(resource, clock.instant(), Instant.MAX));
+        Instant now = clock.instant();
+        blocklist.updateAndGet(current -> current.sweepExpired(now).blockPermanently(resource));
+        events.emit(new PoolEvent.ResourceBlocklisted(resource, now, Instant.MAX));
     }
 
     /**
@@ -244,9 +256,11 @@ public final class ResourcePool {
      */
     public void unblock(ResourceId resource) {
         Objects.requireNonNull(resource, "resource must not be null");
-        Blocklist previous = blocklist.getAndUpdate(current -> current.release(resource));
+        Instant now = clock.instant();
+        Blocklist previous =
+                blocklist.getAndUpdate(current -> current.sweepExpired(now).release(resource));
         if (previous.entries().containsKey(resource)) {
-            events.emit(new PoolEvent.ResourceUnblocked(resource, clock.instant()));
+            events.emit(new PoolEvent.ResourceUnblocked(resource, now));
         }
     }
 

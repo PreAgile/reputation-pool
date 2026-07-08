@@ -120,6 +120,15 @@ class ResourcePoolTest {
     }
 
     @Test
+    void renewFailsForABlocklistedResource() {
+        var pool = poolAt(fixed());
+        pool.register(proxy("p1"));
+        var lease = pool.acquire(CTX).orElseThrow();
+        pool.block(proxy("p1"), Duration.ofHours(1));
+        assertThat(pool.renew(lease)).isEmpty(); // a blocklisted resource cannot be renewed
+    }
+
+    @Test
     void blockExcludesFromAcquireAndEmitsBlocklisted() {
         var pool = poolAt(fixed());
         pool.register(proxy("p1"));
