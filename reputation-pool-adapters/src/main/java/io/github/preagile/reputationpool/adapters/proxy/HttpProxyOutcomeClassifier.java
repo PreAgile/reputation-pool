@@ -23,6 +23,8 @@ import java.net.SocketTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.Objects;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import javax.net.ssl.SSLException;
 
 /**
@@ -92,16 +94,34 @@ public final class HttpProxyOutcomeClassifier implements OutcomeClassifier {
     public Outcome classifyError(Throwable error, Duration latency) {
         Objects.requireNonNull(error, "error must not be null");
         Objects.requireNonNull(latency, "latency must not be null");
+        Throwable cause = unwrapAsync(error);
         FailureType type;
-        if (error instanceof SSLException) {
+        if (cause instanceof SSLException) {
             type = FailureType.TLS_HANDSHAKE;
-        } else if (error instanceof HttpTimeoutException || error instanceof SocketTimeoutException) {
+        } else if (cause instanceof HttpTimeoutException || cause instanceof SocketTimeoutException) {
             type = FailureType.TIMEOUT;
-        } else if (error instanceof ConnectException || error instanceof SocketException) {
+        } else if (cause instanceof ConnectException || cause instanceof SocketException) {
             type = FailureType.CONNECTION_RESET;
         } else {
             type = FailureType.CONNECTION_RESET; // generic transport failure
         }
         return new Outcome.Failure(type, latency);
+    }
+
+    /**
+     * Async callers ({@code sendAsync}, {@code Future.get}) surface the transport cause wrapped in
+     * {@link CompletionException} / {@link ExecutionException}; classification must reach the cause,
+     * not stop at the wrapper. Depth-capped so a pathological cause cycle still terminates.
+     */
+    private static Throwable unwrapAsync(Throwable error) {
+        Throwable cause = error;
+        for (int depth = 0;
+                depth < 8
+                        && (cause instanceof CompletionException || cause instanceof ExecutionException)
+                        && cause.getCause() != null;
+                depth++) {
+            cause = cause.getCause();
+        }
+        return cause;
     }
 }

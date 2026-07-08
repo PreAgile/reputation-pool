@@ -24,6 +24,8 @@ import java.net.ConnectException;
 import java.net.SocketTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import javax.net.ssl.SSLHandshakeException;
 import org.junit.jupiter.api.Test;
 
@@ -80,6 +82,25 @@ class HttpProxyOutcomeClassifierTest {
         assertThat(failureType(classifier.classifyError(new ConnectException("x"), FAST)))
                 .isEqualTo(FailureType.CONNECTION_RESET);
         assertThat(failureType(classifier.classifyError(new RuntimeException("x"), FAST)))
+                .isEqualTo(FailureType.CONNECTION_RESET);
+    }
+
+    @Test
+    void asyncWrapperExceptionsAreUnwrappedBeforeClassification() {
+        // sendAsync-style callers surface the transport cause inside CompletionException /
+        // ExecutionException; classification must reach the cause, not stop at the wrapper
+        assertThat(failureType(classifier.classifyError(new CompletionException(new SSLHandshakeException("x")), FAST)))
+                .isEqualTo(FailureType.TLS_HANDSHAKE);
+        assertThat(failureType(classifier.classifyError(new ExecutionException(new HttpTimeoutException("x")), FAST)))
+                .isEqualTo(FailureType.TIMEOUT);
+        assertThat(failureType(classifier.classifyError(
+                        new CompletionException(new ExecutionException(new SSLHandshakeException("x"))), FAST)))
+                .isEqualTo(FailureType.TLS_HANDSHAKE);
+    }
+
+    @Test
+    void aWrapperWithoutACauseFallsBackToConnectionReset() {
+        assertThat(failureType(classifier.classifyError(new CompletionException("bare", null), FAST)))
                 .isEqualTo(FailureType.CONNECTION_RESET);
     }
 

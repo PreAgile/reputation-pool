@@ -55,11 +55,43 @@ class ProxyEndpointTest {
     }
 
     @Test
+    void aSelfHostedProxyHasNoVendorAndKeepsAnEmptyVendorSlot() {
+        // the leading slot stays in the encoding so a vendor-less id can never collide with a
+        // vendored one whose vendor happens to equal the type string
+        var selfHosted = new ProxyEndpoint(null, ProxyType.DATACENTER, "squid.internal", 3128, null);
+        assertThat(selfHosted.toResourceId().value()).isEqualTo("|DATACENTER|squid.internal:3128");
+    }
+
+    @Test
+    void aBlankVendorNormalizesToNullSoRecordEqualityMatchesIdentity() {
+        var blank = new ProxyEndpoint("  ", ProxyType.DATACENTER, "squid.internal", 3128, null);
+        var absent = new ProxyEndpoint(null, ProxyType.DATACENTER, "squid.internal", 3128, null);
+        assertThat(blank).isEqualTo(absent);
+        assertThat(blank.toResourceId()).isEqualTo(absent.toResourceId());
+    }
+
+    @Test
+    void aBlankSessionNormalizesToNullSoRecordEqualityMatchesIdentity() {
+        var blank = new ProxyEndpoint("v", ProxyType.ISP, "gw", 8080, "  ");
+        var absent = new ProxyEndpoint("v", ProxyType.ISP, "gw", 8080, null);
+        assertThat(blank).isEqualTo(absent);
+        assertThat(blank.hashCode()).isEqualTo(absent.hashCode());
+    }
+
+    @Test
+    void rejectsTheDelimiterInEveryTextualField() {
+        // '|' is the id separator: letting it into a field would allow two different endpoints
+        // to encode to the same ResourceId and share one reputation cell
+        assertThatThrownBy(() -> new ProxyEndpoint("v|MOBILE|h:80", ProxyType.MOBILE, "h", 80, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ProxyEndpoint("v", ProxyType.MOBILE, "h|x", 80, null))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ProxyEndpoint("v", ProxyType.MOBILE, "h", 80, "MOBILE|h:80"))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
     void rejectsInvalidComponents() {
-        assertThatThrownBy(() -> new ProxyEndpoint(null, ProxyType.ISP, "gw", 8080, null))
-                .isInstanceOf(IllegalArgumentException.class);
-        assertThatThrownBy(() -> new ProxyEndpoint("  ", ProxyType.ISP, "gw", 8080, null))
-                .isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> new ProxyEndpoint("v", null, "gw", 8080, null))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> new ProxyEndpoint("v", ProxyType.ISP, "", 8080, null))

@@ -24,10 +24,12 @@ import java.util.Objects;
  * {@link ResourceId}.
  *
  * <p>The identity that reputation accrues to is composed only of the <em>stable</em> parts of a proxy —
- * vendor, {@link ProxyType type}, the gateway {@code host:port}, and an optional sticky
+ * an optional vendor, {@link ProxyType type}, the gateway {@code host:port}, and an optional sticky
  * {@code session}. A rotating egress IP is deliberately <b>not</b> a field: keying on an IP that
  * changes per request would spawn a new single-use cell every time and no reputation would ever
  * accumulate. The gateway (and sticky session, when pinned) is the thing that actually stays put.
+ * Vendor is absent for self-hosted proxies (an in-house Squid, an internal gateway), where the
+ * concept does not exist; {@code host:port} alone already makes the identity unique.
  *
  * <p>The core never parses this value — it only uses it as a map key — so the encoding is the
  * adapter's private concern.
@@ -35,33 +37,51 @@ import java.util.Objects;
 public record ProxyEndpoint(String vendor, ProxyType type, String host, int port, String session) {
 
     /**
+     * Optional fields normalize on construction: a blank {@code vendor} or {@code session} collapses
+     * to {@code null}, so record equality always agrees with {@link #toResourceId()} equality.
+     *
      * @throws NullPointerException if {@code type} is null
-     * @throws IllegalArgumentException if {@code vendor} or {@code host} is blank, or {@code port} is
-     *     outside {@code 1..65535}
+     * @throws IllegalArgumentException if {@code host} is blank, {@code port} is outside
+     *     {@code 1..65535}, or any textual field contains {@code '|'} (the id separator — letting it
+     *     into a field would let two different endpoints encode to the same {@link ResourceId})
      */
     public ProxyEndpoint {
         Objects.requireNonNull(type, "type must not be null");
-        if (vendor == null || vendor.isBlank()) {
-            throw new IllegalArgumentException("vendor must not be null or blank");
-        }
+        vendor = normalizeOptional(vendor, "vendor");
+        session = normalizeOptional(session, "session");
         if (host == null || host.isBlank()) {
             throw new IllegalArgumentException("host must not be null or blank");
+        }
+        if (host.indexOf('|') >= 0) {
+            throw new IllegalArgumentException("host must not contain '|'");
         }
         if (port < 1 || port > 65535) {
             throw new IllegalArgumentException("port must be in 1..65535");
         }
-        // session is optional: null or blank means "no sticky session"
+    }
+
+    private static String normalizeOptional(String value, String name) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        if (value.indexOf('|') >= 0) {
+            throw new IllegalArgumentException(name + " must not contain '|'");
+        }
+        return value;
     }
 
     /**
      * This endpoint's identity as the core sees it: {@code PROXY} kind with a composite value over the
      * stable parts. The value is opaque to the core.
      *
+     * <p>A missing vendor keeps its empty leading slot ({@code |TYPE|host:port}) so a vendor-less id
+     * can never collide with a vendored one.
+     *
      * @return the resource id for this endpoint
      */
     public ResourceId toResourceId() {
-        String value = vendor + "|" + type + "|" + host + ":" + port;
-        if (session != null && !session.isBlank()) {
+        String value = (vendor != null ? vendor : "") + "|" + type + "|" + host + ":" + port;
+        if (session != null) {
             value += "|" + session;
         }
         return new ResourceId(ResourceKind.PROXY, value);

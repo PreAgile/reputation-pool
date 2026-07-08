@@ -35,7 +35,31 @@ public final class Slf4jEventSink implements EventSink {
 
     @Override
     public void emit(PoolEvent event) {
-        LOG.info("{}", format(event));
+        if (isPerRequest(event)) {
+            // per-request events at INFO would flood production logs; the guard also skips the
+            // format cost when debug logging is off
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("{}", format(event));
+            }
+        } else {
+            LOG.info("{}", format(event));
+        }
+    }
+
+    /**
+     * Whether this event fires once per request (lease churn) rather than on a state transition. An
+     * exhaustive switch — like {@link #format}, a new event kind stops compiling until its log level
+     * is decided here, instead of silently defaulting to INFO.
+     */
+    static boolean isPerRequest(PoolEvent event) {
+        return switch (event) {
+            case PoolEvent.ResourceLeased e -> true;
+            case PoolEvent.LeaseReleased e -> true;
+            case PoolEvent.ResourceCooled e -> false;
+            case PoolEvent.ResourceRecovered e -> false;
+            case PoolEvent.ResourceBlocklisted e -> false;
+            case PoolEvent.ResourceUnblocked e -> false;
+        };
     }
 
     /** Renders an event as a human-readable line. Package-private so it can be asserted without a log capture. */

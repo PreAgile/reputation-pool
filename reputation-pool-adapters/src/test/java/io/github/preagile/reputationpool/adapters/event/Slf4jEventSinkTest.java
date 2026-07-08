@@ -51,6 +51,24 @@ class Slf4jEventSinkTest {
     }
 
     @Test
+    void onlyPerRequestEventKindsAreDebugLevel() {
+        // leased/released fire once per request — INFO would flood production logs
+        assertThat(Slf4jEventSink.isPerRequest(new PoolEvent.ResourceLeased(RID, CTX, AT, AT.plusSeconds(60))))
+                .isTrue();
+        assertThat(Slf4jEventSink.isPerRequest(new PoolEvent.LeaseReleased(RID, CTX, AT)))
+                .isTrue();
+        assertThat(Slf4jEventSink.isPerRequest(
+                        new PoolEvent.ResourceCooled(RID, CTX, AT, AT.plusSeconds(60), FailureType.BLOCKED)))
+                .isFalse();
+        assertThat(Slf4jEventSink.isPerRequest(new PoolEvent.ResourceRecovered(RID, CTX, AT)))
+                .isFalse();
+        assertThat(Slf4jEventSink.isPerRequest(new PoolEvent.ResourceBlocklisted(RID, AT, AT.plusSeconds(60))))
+                .isFalse();
+        assertThat(Slf4jEventSink.isPerRequest(new PoolEvent.ResourceUnblocked(RID, AT)))
+                .isFalse();
+    }
+
+    @Test
     void emitDoesNotThrow() {
         var sink = new Slf4jEventSink();
         assertThatCode(() -> sink.emit(new PoolEvent.ResourceRecovered(RID, CTX, AT)))
