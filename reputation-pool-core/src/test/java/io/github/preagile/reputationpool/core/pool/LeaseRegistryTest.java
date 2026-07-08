@@ -266,6 +266,38 @@ class LeaseRegistryTest {
     }
 
     @Test
+    void manyThreadsRacingToReclaimAnExpiredLeaseExactlyOneWins() throws Exception {
+        var registry = new LeaseRegistry();
+        var id = proxy("expiring");
+        registry.tryAcquire(id, CTX, NOW, Duration.ofSeconds(1)); // a holder that will expire
+        var afterExpiry = NOW.plusSeconds(2); // the lease has now expired -> the reclaim branch
+
+        int threads = 32;
+        var pool = Executors.newFixedThreadPool(threads);
+        var startGate = new CountDownLatch(1);
+        var wins = new AtomicInteger();
+        var futures = new ArrayList<Future<?>>();
+        try {
+            for (int i = 0; i < threads; i++) {
+                futures.add(pool.submit(() -> {
+                    startGate.await();
+                    if (registry.tryAcquire(id, CTX, afterExpiry, TTL).isPresent()) {
+                        wins.incrementAndGet();
+                    }
+                    return null;
+                }));
+            }
+            startGate.countDown();
+            for (var future : futures) {
+                future.get();
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertThat(wins.get()).isEqualTo(1); // exactly one thread reclaims the expired slot
+    }
+
+    @Test
     void concurrentAcquireAndReleaseNeverDoubleLeases() throws Exception {
         var registry = new LeaseRegistry();
         var id = proxy("hot");

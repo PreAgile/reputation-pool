@@ -69,10 +69,16 @@ public final class LeaseRegistry {
         Objects.requireNonNull(context, "context must not be null");
         Objects.requireNonNull(now, "now must not be null");
         requirePositive(ttl);
-        Lease mine = new Lease(resource, context, fencing.incrementAndGet(), now, now.plus(ttl));
-        Lease held = active.compute(
-                resource, (key, current) -> (current == null || current.isExpired(now)) ? mine : current);
-        return held == mine ? Optional.of(mine) : Optional.empty();
+        Lease[] created = {null};
+        active.compute(resource, (key, current) -> {
+            if (current == null || current.isExpired(now)) {
+                // build the lease and burn a fencing token only when the claim actually wins
+                created[0] = new Lease(resource, context, fencing.incrementAndGet(), now, now.plus(ttl));
+                return created[0];
+            }
+            return current; // already held by a live lease
+        });
+        return Optional.ofNullable(created[0]);
     }
 
     /**
@@ -115,8 +121,15 @@ public final class LeaseRegistry {
      */
     public boolean release(ResourceId resource, long token) {
         Objects.requireNonNull(resource, "resource must not be null");
-        Lease current = active.get(resource);
-        return current != null && current.token() == token && active.remove(resource, current);
+        boolean[] released = {false};
+        active.computeIfPresent(resource, (key, current) -> {
+            if (current.token() == token) {
+                released[0] = true;
+                return null; // token matches: remove the mapping
+            }
+            return current; // stale token: leave the current holder's lease untouched
+        });
+        return released[0];
     }
 
     /**
