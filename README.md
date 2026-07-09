@@ -88,6 +88,37 @@ resource everywhere.
 | `reputation-pool-adapters` | Demo resource kinds (proxy, account) implementing the ports. | Done |
 | `reputation-pool-server` | Spring adapter ring — gRPC, persistence, virtual-thread probing, observability. | Planned |
 
+## Architecture
+
+The repository is one hexagon that grows outward from a pure core, and every dependency points **inward**:
+an ArchUnit rule fails the build on any `core → Spring / Netty / JDBC / gRPC` import, so the dependency-free
+boundary is guarded by CI, not by convention.
+
+```mermaid
+flowchart TB
+    adapters["reputation-pool-adapters — L1 (done)<br/>proxy and account demos"]
+    server["reputation-pool-server — L2–L3 (planned)<br/>gRPC advisor · persistence · observability"]
+
+    subgraph core["reputation-pool-core — pure Java, JDK only"]
+        M1["M1 (done) · decision engine<br/>pure (state, outcome, now) → new state"]
+        M2["M2 (done) · concurrency layer<br/>ResourcePool facade + ports"]
+    end
+
+    adapters -->|depends on| core
+    server -->|depends on| core
+```
+
+The roadmap labels encode that boundary:
+
+- **M — milestones** build the pure core itself (`reputation-pool-core`: JDK-only, no I/O). `M1` is the
+  decision engine; `M2` is the concurrency layer and the first port.
+- **L — layers** are separate modules added *around* the core, where frameworks and real I/O are allowed.
+  `L1` is the demo adapters, `L2` the gRPC server, `L3` persistence.
+
+The line between them is exactly the module boundary the ArchUnit rule protects: code inside `core` stays a
+pure function of its inputs, and everything that touches the network, a clock, or a database lives in an
+`L` module that depends inward on `core` — never the other way around.
+
 ## Building from source
 
 ```bash
