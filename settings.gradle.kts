@@ -7,3 +7,4 @@ rootProject.name = "reputation-pool"
 
 include("reputation-pool-core")
 include("reputation-pool-adapters")
+include("reputation-pool-server")
