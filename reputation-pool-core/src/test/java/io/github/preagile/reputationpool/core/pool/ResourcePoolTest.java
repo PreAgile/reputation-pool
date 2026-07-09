@@ -242,11 +242,10 @@ class ResourcePoolTest {
         pool.register(proxy("p2"));
 
         int threads = 32;
-        var executor = Executors.newFixedThreadPool(threads);
-        var startGate = new CountDownLatch(1);
         var acquired = new CopyOnWriteArrayList<ResourceId>();
-        var futures = new ArrayList<Future<?>>();
-        try {
+        try (var executor = Executors.newFixedThreadPool(threads)) {
+            var startGate = new CountDownLatch(1);
+            var futures = new ArrayList<Future<?>>();
             for (int i = 0; i < threads; i++) {
                 futures.add(executor.submit(() -> {
                     startGate.await();
@@ -258,8 +257,6 @@ class ResourcePoolTest {
             for (var future : futures) {
                 future.get();
             }
-        } finally {
-            executor.shutdownNow();
         }
 
         // no resource was handed out twice, and no more than the three registered were leased
@@ -276,10 +273,9 @@ class ResourcePoolTest {
 
         int threads = 16;
         int reportsPerThread = 50;
-        var executor = Executors.newFixedThreadPool(threads);
-        var startGate = new CountDownLatch(1);
-        var futures = new ArrayList<Future<?>>();
-        try {
+        try (var executor = Executors.newFixedThreadPool(threads)) {
+            var startGate = new CountDownLatch(1);
+            var futures = new ArrayList<Future<?>>();
             for (int i = 0; i < threads; i++) {
                 futures.add(executor.submit(() -> {
                     startGate.await();
@@ -293,8 +289,6 @@ class ResourcePoolTest {
             for (var future : futures) {
                 future.get();
             }
-        } finally {
-            executor.shutdownNow();
         }
 
         // 800 racing failures cross coolAfter = 3 exactly once: the clock is fixed, so the first
