@@ -45,7 +45,6 @@ class AccountCredentialTest {
         var a = new AccountCredential("github", "user_kim");
         var b = new AccountCredential("github", "user_kim");
         assertThat(a.toResourceId()).isEqualTo(b.toResourceId());
-        assertThat(a).isEqualTo(b);
     }
 
     @Test

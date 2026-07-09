@@ -21,9 +21,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import io.github.preagile.reputationpool.core.domain.FailureType;
 import io.github.preagile.reputationpool.core.domain.Outcome;
 import java.net.ConnectException;
+import java.net.SocketTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
 import javax.net.ssl.SSLHandshakeException;
 import org.junit.jupiter.api.Test;
 
@@ -99,6 +101,45 @@ class HttpAccountOutcomeClassifierTest {
         var wrapped = new CompletionException(new HttpTimeoutException("timed out"));
         assertThat(failureTypeOf(classifier.classifyError(wrapped, Duration.ofMillis(10))))
                 .isEqualTo(FailureType.TIMEOUT);
+    }
+
+    @Test
+    void aRequestTimeoutStatusIsAReputationalTimeout() {
+        // 408 shares the switch case with 504; cover it so a mutant dropping it cannot survive
+        assertThat(failureTypeOf(classifier.classifyResponse(408, Duration.ofMillis(10))))
+                .isEqualTo(FailureType.TIMEOUT);
+    }
+
+    @Test
+    void aDirectSocketTimeoutClassifiesAsTimeout() {
+        // the SocketTimeoutException instanceof arm is separate from HttpTimeoutException
+        var probe = classifier.classifyError(new SocketTimeoutException("read timed out"), Duration.ofMillis(10));
+        assertThat(failureTypeOf(probe)).isEqualTo(FailureType.TIMEOUT);
+    }
+
+    @Test
+    void anExecutionExceptionWrappedTimeoutIsUnwrappedToTimeout() {
+        // unwrapAsync unwraps ExecutionException as well as CompletionException
+        var wrapped = new ExecutionException(new HttpTimeoutException("timed out"));
+        assertThat(failureTypeOf(classifier.classifyError(wrapped, Duration.ofMillis(10))))
+                .isEqualTo(FailureType.TIMEOUT);
+    }
+
+    @Test
+    void rejectsANullLatencyOnAResponse() {
+        assertThatThrownBy(() -> classifier.classifyResponse(200, null)).isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void rejectsANullError() {
+        assertThatThrownBy(() -> classifier.classifyError(null, Duration.ofMillis(10)))
+                .isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
+    void rejectsANullLatencyOnAnError() {
+        assertThatThrownBy(() -> classifier.classifyError(new ConnectException("refused"), null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test
