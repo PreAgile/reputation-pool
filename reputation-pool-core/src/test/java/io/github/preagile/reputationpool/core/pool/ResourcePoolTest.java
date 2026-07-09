@@ -27,10 +27,10 @@ import io.github.preagile.reputationpool.core.domain.ResourceKind;
 import io.github.preagile.reputationpool.core.engine.AdaptiveCooldownPolicy;
 import io.github.preagile.reputationpool.core.engine.ReputationEngine;
 import io.github.preagile.reputationpool.core.port.EventSink;
+import io.github.preagile.reputationpool.core.testing.SettableClock;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
-import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -40,6 +40,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 
 class ResourcePoolTest {
@@ -138,6 +139,28 @@ class ResourcePoolTest {
     }
 
     @Test
+    void blockPermanentlySurvivesAnyAmountOfTimeUntilExplicitUnblock() {
+        // coverage for #27: blockPermanently had no test at the facade
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        pool.blockPermanently(proxy("p1"));
+
+        assertThat(pool.acquire(CTX)).isEmpty();
+        clock.set(NOW.plus(Duration.ofDays(3650)));
+        assertThat(pool.acquire(CTX))
+                .as("no expiry ever sweeps a permanent block")
+                .isEmpty();
+        assertThat(sink.events)
+                .filteredOn(PoolEvent.ResourceBlocklisted.class::isInstance)
+                .anySatisfy(event -> assertThat(((PoolEvent.ResourceBlocklisted) event).until())
+                        .isEqualTo(Instant.MAX));
+
+        pool.unblock(proxy("p1"));
+        assertThat(pool.acquire(CTX)).as("only an explicit unblock releases it").isPresent();
+    }
+
+    @Test
     void unblockMakesItAcquirableAgainAndEmitsUnblocked() {
         var pool = poolAt(fixed());
         pool.register(proxy("p1"));
@@ -208,9 +231,10 @@ class ResourcePoolTest {
         assertThatThrownBy(() -> pool.release(null)).isInstanceOf(NullPointerException.class);
     }
 
-    // --- concurrency: pool-level lease exclusivity ---
+    // --- concurrency: pool-level lease exclusivity and the report path (#27) ---
+    // repeated: a single run can stay green on a 1-in-N race; repetition raises the catch rate
 
-    @Test
+    @RepeatedTest(5)
     void concurrentAcquireNeverLendsTheSameResourceTwice() throws Exception {
         var pool = poolAt(fixed());
         pool.register(proxy("p0"));
@@ -218,11 +242,10 @@ class ResourcePoolTest {
         pool.register(proxy("p2"));
 
         int threads = 32;
-        var executor = Executors.newFixedThreadPool(threads);
-        var startGate = new CountDownLatch(1);
         var acquired = new CopyOnWriteArrayList<ResourceId>();
-        var futures = new ArrayList<Future<?>>();
-        try {
+        try (var executor = Executors.newFixedThreadPool(threads)) {
+            var startGate = new CountDownLatch(1);
+            var futures = new ArrayList<Future<?>>();
             for (int i = 0; i < threads; i++) {
                 futures.add(executor.submit(() -> {
                     startGate.await();
@@ -234,8 +257,6 @@ class ResourcePoolTest {
             for (var future : futures) {
                 future.get();
             }
-        } finally {
-            executor.shutdownNow();
         }
 
         // no resource was handed out twice, and no more than the three registered were leased
@@ -243,32 +264,40 @@ class ResourcePoolTest {
         assertThat(acquired).hasSizeLessThanOrEqualTo(3);
     }
 
-    /** A test clock whose instant can be advanced to drive time-dependent behavior deterministically. */
-    private static final class SettableClock extends Clock {
-        private volatile Instant now;
+    @RepeatedTest(10)
+    void concurrentBlockedReportsNeverLoseTheCoolingTransition() throws Exception {
+        // report() is the highest-frequency production call; a lost update on the per-key compute
+        // would either miss the coolAfter threshold (no cooled event) or double-fire the transition
+        var pool = poolAt(fixed());
+        pool.register(proxy("p1"));
 
-        SettableClock(Instant now) {
-            this.now = now;
+        int threads = 16;
+        int reportsPerThread = 50;
+        try (var executor = Executors.newFixedThreadPool(threads)) {
+            var startGate = new CountDownLatch(1);
+            var futures = new ArrayList<Future<?>>();
+            for (int i = 0; i < threads; i++) {
+                futures.add(executor.submit(() -> {
+                    startGate.await();
+                    for (int j = 0; j < reportsPerThread; j++) {
+                        pool.report(proxy("p1"), CTX, blocked());
+                    }
+                    return null;
+                }));
+            }
+            startGate.countDown();
+            for (var future : futures) {
+                future.get();
+            }
         }
 
-        void set(Instant now) {
-            this.now = now;
-        }
-
-        @Override
-        public Instant instant() {
-            return now;
-        }
-
-        @Override
-        public ZoneId getZone() {
-            return ZoneOffset.UTC;
-        }
-
-        @Override
-        public Clock withZone(ZoneId zone) {
-            return this;
-        }
+        // 800 racing failures cross coolAfter = 3 exactly once: the clock is fixed, so the first
+        // cooldown never expires and every later failure lands inside it (no extension, no re-fire)
+        assertThat(sink.events.stream()
+                        .filter(PoolEvent.ResourceCooled.class::isInstance)
+                        .count())
+                .isEqualTo(1);
+        assertThat(pool.acquire(CTX)).as("the cooled resource is not lendable").isEmpty();
     }
 
     /** An {@link EventSink} that records everything it receives, safe for the concurrency test. */

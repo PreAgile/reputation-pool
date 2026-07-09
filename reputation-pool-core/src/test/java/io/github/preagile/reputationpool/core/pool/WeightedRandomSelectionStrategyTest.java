@@ -192,6 +192,43 @@ class WeightedRandomSelectionStrategyTest {
                 .isEqualTo(strategy.select(candidates, new Random(seed)));
     }
 
+    // distribution shape over ANY seed (#27): the seed-pinned tests above assert tight bands off one
+    // fixed stream; these assert generous bands that only a genuine weighting regression can leave
+
+    @Property(tries = 100)
+    void aClearlyHigherScoreWinsTheMajorityUnderAnySeed(@ForAll long seed) {
+        var high = cell("high", 80.0);
+        var low = cell("low", -80.0);
+        var candidates = List.of(low, high);
+        var random = new Random(seed);
+        int highHits = 0;
+        int draws = 2_000;
+        for (int i = 0; i < draws; i++) {
+            if (strategy.select(candidates, random).orElseThrow().equals(high)) {
+                highHits++;
+            }
+        }
+        assertThat((double) highHits / draws).isGreaterThan(0.60);
+    }
+
+    @Property(tries = 100)
+    void equalScoresStayRoughlyUniformUnderAnySeed(@ForAll long seed) {
+        var x = cell("x", 10.0);
+        var y = cell("y", 10.0);
+        var candidates = List.of(x, y);
+        var random = new Random(seed);
+        int xHits = 0;
+        int draws = 2_000;
+        for (int i = 0; i < draws; i++) {
+            if (strategy.select(candidates, random).orElseThrow().equals(x)) {
+                xHits++;
+            }
+        }
+        // ~9 standard deviations wide at p=0.5, n=2000: statistically impossible to trip by chance,
+        // trivially tripped by a real bias bug
+        assertThat((double) xHits / draws).isBetween(0.40, 0.60);
+    }
+
     private static List<ReputationCell> candidatesOf(List<Integer> scores) {
         var candidates = new ArrayList<ReputationCell>();
         for (int i = 0; i < scores.size(); i++) {

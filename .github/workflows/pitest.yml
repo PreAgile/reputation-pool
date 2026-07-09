@@ -1,0 +1,36 @@
+# Mutation testing as a scheduled quality probe (#27). PIT proves the tests have teeth —
+# a surviving mutant is an assertion that never fires. It is far too slow for the PR gate,
+# so it runs nightly (and on demand) instead of never.
+name: Mutation Testing
+
+on:
+  schedule:
+    - cron: '0 2 * * *'   # nightly, 02:00 UTC
+  workflow_dispatch:
+
+jobs:
+  pitest:
+    name: PIT (core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Run PIT mutation testing
+        run: ./gradlew :reputation-pool-core:pitest --no-daemon
+
+      - name: Upload mutation report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: pitest-report
+          path: reputation-pool-core/build/reports/pitest/
+          if-no-files-found: ignore

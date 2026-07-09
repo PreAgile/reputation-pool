@@ -22,6 +22,8 @@ dependencies {
 
     testImplementation(platform("org.junit:junit-bom:6.1.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
+    // Shared test helpers from core (SettableClock) instead of per-module copies.
+    testImplementation(testFixtures(project(":reputation-pool-core")))
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("org.assertj:assertj-core:3.27.7")
     // WireMock drives the integration test: a real HTTP endpoint the adapter probes over java.net.http.
