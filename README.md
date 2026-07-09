@@ -119,6 +119,10 @@ The line between them is exactly the module boundary the ArchUnit rule protects:
 pure function of its inputs, and everything that touches the network, a clock, or a database lives in an
 `L` module that depends inward on `core` — never the other way around.
 
+New to the project? [Concepts, flow, and vocabulary](docs/architecture/01-concepts-and-glossary.md) walks
+through who-calls-whom and every term (lease, advisory, fencing token, EventSink, advisor, ...) in plain
+language.
+
 ## Building from source
 
 ```bash
