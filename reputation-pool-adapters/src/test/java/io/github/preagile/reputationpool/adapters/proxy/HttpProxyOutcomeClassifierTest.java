@@ -105,6 +105,16 @@ class HttpProxyOutcomeClassifierTest {
     }
 
     @Test
+    void aJvmErrorIsRethrownRatherThanClassified() {
+        // a JVM-level Error is not a transport failure; it must propagate unchanged rather than be
+        // classified as CONNECTION_RESET and cool the proxy — even when an async boundary wraps it
+        var oom = new OutOfMemoryError("heap");
+        assertThatThrownBy(() -> classifier.classifyError(oom, FAST)).isSameAs(oom);
+        assertThatThrownBy(() -> classifier.classifyError(new CompletionException(oom), FAST))
+                .isSameAs(oom);
+    }
+
+    @Test
     void rejectsNonPositiveSlowThresholdAndNullArguments() {
         assertThatThrownBy(() -> new HttpProxyOutcomeClassifier(Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
