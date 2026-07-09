@@ -85,7 +85,7 @@ resource everywhere.
 | Module | Description | Status |
 |---|---|---|
 | `reputation-pool-core` | Pure decision engine — domain, engine, ports. JDK only. | In progress |
-| `reputation-pool-adapters` | Demo resource kinds (proxy, account) implementing the ports. | Planned |
+| `reputation-pool-adapters` | Demo resource kinds (proxy, account) implementing the ports. | Done |
 | `reputation-pool-server` | Spring adapter ring — gRPC, persistence, virtual-thread probing, observability. | Planned |
 
 ## Building from source
@@ -103,7 +103,8 @@ ArchUnit purity rules. The build provisions JDK 25 automatically via the Foojay 
       invariants + ArchUnit purity gate.
 - [x] **M2 — concurrency layer**: `Blocklist`, `SelectionStrategy`, `LeaseRegistry`, `ResourcePool` facade,
       and the first `EventSink` port; 32-thread lease-exclusivity tests.
-- [ ] **L1 — adapter demos**: proxy and account adapters driven by the same engine.
+- [x] **L1 — adapter demos**: proxy and account adapters driven by the same engine — per-kind outcome
+      classifiers and WireMock end-to-end cooling/recovery tests.
 - [ ] **L2 — gRPC advisor**: `acquire / report / renew / release` + event stream; publish core to Maven Central.
 - [ ] **L3 — persistence**: snapshot + audit trail behind the `ResourceStore` port.
 
