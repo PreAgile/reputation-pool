@@ -17,8 +17,6 @@ package io.github.preagile.reputationpool.adapters.proxy;
 
 import io.github.preagile.reputationpool.core.domain.FailureType;
 import io.github.preagile.reputationpool.core.domain.Outcome;
-import java.net.ConnectException;
-import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
@@ -95,15 +93,19 @@ public final class HttpProxyOutcomeClassifier implements OutcomeClassifier {
         Objects.requireNonNull(error, "error must not be null");
         Objects.requireNonNull(latency, "latency must not be null");
         Throwable cause = unwrapAsync(error);
+        if (cause instanceof Error jvmError) {
+            // a JVM-level Error (OOM, stack overflow) is not a transport failure; never cool a
+            // proxy's reputation for it — let it propagate to the caller unchanged
+            throw jvmError;
+        }
         FailureType type;
         if (cause instanceof SSLException) {
             type = FailureType.TLS_HANDSHAKE;
         } else if (cause instanceof HttpTimeoutException || cause instanceof SocketTimeoutException) {
             type = FailureType.TIMEOUT;
-        } else if (cause instanceof ConnectException || cause instanceof SocketException) {
-            type = FailureType.CONNECTION_RESET;
         } else {
-            type = FailureType.CONNECTION_RESET; // generic transport failure
+            // any other transport failure (connection reset, socket error, unknown) is generic
+            type = FailureType.CONNECTION_RESET;
         }
         return new Outcome.Failure(type, latency);
     }
