@@ -137,14 +137,111 @@ class ProtoMappingTest {
     }
 
     @Test
-    void aPermanentBlockUntilInstantMaxSurvivesTheTimestampRoundTrip() {
-        // Instant.MAX is the sentinel for a permanent block; the manual Timestamp mapping must not
-        // clamp or overflow it (google.protobuf.util's checkValid would reject it — we don't use it)
-        AdvisorProto.PoolEvent proto = ProtoMapping.toProto(
-                new PoolEvent.ResourceBlocklisted(new ResourceId(ResourceKind.PROXY, "p1"), AT, Instant.MAX));
-        var until = proto.getBlocklisted().getUntil();
-        assertThat(until.getSeconds()).isEqualTo(Instant.MAX.getEpochSecond());
-        assertThat(until.getNanos()).isEqualTo(Instant.MAX.getNano());
+    void aRecoveredEventCarriesItsFieldsAcrossTheWire() {
+        ResourceId res = new ResourceId(ResourceKind.PROXY, "p2");
+        Context ctx = new Context("marketplace-c");
+
+        AdvisorProto.PoolEvent proto = ProtoMapping.toProto(new PoolEvent.ResourceRecovered(res, ctx, AT));
+
+        assertThat(proto.getAt().getSeconds()).isEqualTo(AT.getEpochSecond());
+        assertThat(ProtoMapping.toDomain(proto.getRecovered().getResource())).isEqualTo(res);
+        assertThat(ProtoMapping.toDomain(proto.getRecovered().getContext())).isEqualTo(ctx);
+    }
+
+    @Test
+    void anUnblockedEventCarriesItsFieldsAcrossTheWire() {
+        ResourceId res = new ResourceId(ResourceKind.SESSION, "s3");
+
+        AdvisorProto.PoolEvent proto = ProtoMapping.toProto(new PoolEvent.ResourceUnblocked(res, AT));
+
+        assertThat(proto.getAt().getSeconds()).isEqualTo(AT.getEpochSecond());
+        assertThat(ProtoMapping.toDomain(proto.getUnblocked().getResource())).isEqualTo(res);
+    }
+
+    @Test
+    void aLeasedEventCarriesItsFieldsAcrossTheWire() {
+        ResourceId res = new ResourceId(ResourceKind.ACCOUNT, "acct-9");
+        Context ctx = new Context("marketplace-d");
+        Instant until = AT.plusSeconds(300);
+
+        AdvisorProto.PoolEvent proto = ProtoMapping.toProto(new PoolEvent.ResourceLeased(res, ctx, AT, until));
+
+        assertThat(proto.getAt().getSeconds()).isEqualTo(AT.getEpochSecond());
+        assertThat(ProtoMapping.toDomain(proto.getLeased().getResource())).isEqualTo(res);
+        assertThat(ProtoMapping.toDomain(proto.getLeased().getContext())).isEqualTo(ctx);
+        assertThat(proto.getLeased().getUntil().getSeconds()).isEqualTo(until.getEpochSecond());
+    }
+
+    @Test
+    void aLeaseReleasedEventCarriesItsFieldsAcrossTheWire() {
+        ResourceId res = new ResourceId(ResourceKind.PROXY, "p4");
+        Context ctx = new Context("marketplace-e");
+
+        AdvisorProto.PoolEvent proto = ProtoMapping.toProto(new PoolEvent.LeaseReleased(res, ctx, AT));
+
+        assertThat(proto.getAt().getSeconds()).isEqualTo(AT.getEpochSecond());
+        assertThat(ProtoMapping.toDomain(proto.getLeaseReleased().getResource()))
+                .isEqualTo(res);
+        assertThat(ProtoMapping.toDomain(proto.getLeaseReleased().getContext())).isEqualTo(ctx);
+    }
+
+    // ---------- permanence crosses the wire as structure, not as a timestamp sentinel ----------
+
+    @Test
+    void aPermanentBlockCrossesTheWireAsThePermanentCase() {
+        // Instant.MAX is the core's permanent-block sentinel; it does not fit the protobuf
+        // Timestamp range, so the wire says "permanent" explicitly instead of carrying the value.
+        ResourceId res = new ResourceId(ResourceKind.PROXY, "p1");
+
+        AdvisorProto.PoolEvent proto = ProtoMapping.toProto(new PoolEvent.ResourceBlocklisted(res, AT, Instant.MAX));
+
+        assertThat(proto.getBlocklisted().getUntilCase())
+                .isEqualTo(AdvisorProto.PoolEvent.ResourceBlocklisted.UntilCase.PERMANENT);
+        assertThat(proto.getBlocklisted().getPermanent()).isTrue();
+        assertThat(ProtoMapping.toDomain(proto.getBlocklisted().getResource())).isEqualTo(res);
+    }
+
+    @Test
+    void aFiniteBlockCrossesTheWireAsAnExpiryTimestamp() {
+        ResourceId res = new ResourceId(ResourceKind.PROXY, "p1");
+        Instant until = AT.plusSeconds(86_400);
+
+        AdvisorProto.PoolEvent proto = ProtoMapping.toProto(new PoolEvent.ResourceBlocklisted(res, AT, until));
+
+        assertThat(proto.getBlocklisted().getUntilCase())
+                .isEqualTo(AdvisorProto.PoolEvent.ResourceBlocklisted.UntilCase.EXPIRES_AT);
+        assertThat(proto.getBlocklisted().getExpiresAt().getSeconds()).isEqualTo(until.getEpochSecond());
+        assertThat(ProtoMapping.toDomain(proto.getBlocklisted().getResource())).isEqualTo(res);
+    }
+
+    @Test
+    void anInstantOutsideTheTimestampRangeIsRejectedLoudly() {
+        // The range guard backstops the remaining protoTimestamp call sites (lease, cooldown),
+        // where the core only ever produces finite instants; a future violation must not be silent.
+        assertThatThrownBy(() -> ProtoMapping.toProto(new PoolEvent.ResourceLeased(
+                        new ResourceId(ResourceKind.PROXY, "p1"), new Context("m"), AT, Instant.MAX)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    // ---------- LeaseHandle: unset timestamps have no domain backstop, so the boundary rejects them ----------
+
+    @Test
+    void aLeaseHandleMissingLeasedAtIsRejected() {
+        AdvisorProto.LeaseHandle handle =
+                ProtoMapping.toProto(someLease()).toBuilder().clearLeasedAt().build();
+        assertThatThrownBy(() -> ProtoMapping.toDomain(handle)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aLeaseHandleMissingExpiresAtIsRejected() {
+        AdvisorProto.LeaseHandle handle =
+                ProtoMapping.toProto(someLease()).toBuilder().clearExpiresAt().build();
+        assertThatThrownBy(() -> ProtoMapping.toDomain(handle)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private static Lease someLease() {
+        return new Lease(
+                new ResourceId(ResourceKind.PROXY, "p1"), new Context("marketplace-a"), 7L, AT, AT.plusSeconds(30));
     }
 
     // ---------- arbitraries ----------

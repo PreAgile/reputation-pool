@@ -148,6 +148,13 @@ final class ProtoMapping {
     }
 
     static Lease toDomain(AdvisorProto.LeaseHandle handle) {
+        // resource/context presence is not checked here: a missing message decodes to its default
+        // instance, whose values the domain constructors already reject (UNSPECIFIED kind, blank
+        // context). The timestamps have no such backstop — Instant.EPOCH is a legal domain value —
+        // so an unset timestamp must be caught at the boundary or it silently becomes a 1970 lease.
+        if (!handle.hasLeasedAt() || !handle.hasExpiresAt()) {
+            throw new IllegalArgumentException("lease timestamps are required");
+        }
         return new Lease(
                 toDomain(handle.getResource()),
                 toDomain(handle.getContext()),
@@ -175,10 +182,7 @@ final class ProtoMapping {
                                 .setContext(toProto(recovered.context())))
                         .build();
             case PoolEvent.ResourceBlocklisted blocklisted ->
-                builder.setBlocklisted(AdvisorProto.PoolEvent.ResourceBlocklisted.newBuilder()
-                                .setResource(toProto(blocklisted.resource()))
-                                .setUntil(protoTimestamp(blocklisted.until())))
-                        .build();
+                builder.setBlocklisted(blocklistedOf(blocklisted)).build();
             case PoolEvent.ResourceUnblocked unblocked ->
                 builder.setUnblocked(AdvisorProto.PoolEvent.ResourceUnblocked.newBuilder()
                                 .setResource(toProto(unblocked.resource())))
@@ -197,6 +201,17 @@ final class ProtoMapping {
         };
     }
 
+    // The core models a permanent block as Instant.MAX (ResourcePool emits it); the wire models it
+    // as the explicit `permanent` oneof branch, because Instant.MAX does not fit the Timestamp range.
+    private static AdvisorProto.PoolEvent.ResourceBlocklisted.Builder blocklistedOf(
+            PoolEvent.ResourceBlocklisted blocklisted) {
+        AdvisorProto.PoolEvent.ResourceBlocklisted.Builder builder =
+                AdvisorProto.PoolEvent.ResourceBlocklisted.newBuilder().setResource(toProto(blocklisted.resource()));
+        return blocklisted.until().equals(Instant.MAX)
+                ? builder.setPermanent(true)
+                : builder.setExpiresAt(protoTimestamp(blocklisted.until()));
+    }
+
     // ---------- time helpers ----------
 
     private static com.google.protobuf.Duration protoDuration(Duration duration) {
@@ -210,7 +225,17 @@ final class ProtoMapping {
         return Duration.ofSeconds(duration.getSeconds(), duration.getNanos());
     }
 
+    // google.protobuf.Timestamp's documented range: 0001-01-01T00:00:00Z .. 9999-12-31T23:59:59Z.
+    // The Java builder does not validate, but checkValid, JSON serialization, and non-Java parsers do.
+    private static final long TIMESTAMP_MIN_SECONDS = -62_135_596_800L;
+    private static final long TIMESTAMP_MAX_SECONDS = 253_402_300_799L;
+
     private static Timestamp protoTimestamp(Instant instant) {
+        // Out-of-range instants (the sentinels Instant.MIN/MAX among them) must not silently leave
+        // the valid range; callers that mean "forever" say so in wire structure, not in a timestamp.
+        if (instant.getEpochSecond() < TIMESTAMP_MIN_SECONDS || instant.getEpochSecond() > TIMESTAMP_MAX_SECONDS) {
+            throw new IllegalArgumentException("instant outside the protobuf Timestamp range: " + instant);
+        }
         return Timestamp.newBuilder()
                 .setSeconds(instant.getEpochSecond())
                 .setNanos(instant.getNano())

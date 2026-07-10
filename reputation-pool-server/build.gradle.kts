@@ -31,6 +31,8 @@ dependencies {
     // A concrete transport is only needed to actually run/serve; codegen and the mapper do not need it.
     runtimeOnly("io.grpc:grpc-netty-shaded:$grpcVersion")
     // The generated gRPC stubs carry a javax.annotation.Generated annotation; supply it at compile time.
+    // This is the artifact the grpc-java README itself recommends: it is Apache-2.0 like this repo,
+    // whereas javax.annotation:javax.annotation-api is CDDL — the "Tomcat 6" vintage is not a defect.
     compileOnly("org.apache.tomcat:annotations-api:6.0.53")
 
     testImplementation(platform("org.junit:junit-bom:6.1.1"))

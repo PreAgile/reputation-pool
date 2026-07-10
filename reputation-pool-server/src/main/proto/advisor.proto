@@ -105,7 +105,13 @@ message PoolEvent {
 
   message ResourceBlocklisted {
     ResourceId resource = 1;
-    google.protobuf.Timestamp until = 2;
+    // A block either expires at a concrete time or never does. Permanence is wire-visible
+    // structure rather than an out-of-range timestamp sentinel (the core's Instant.MAX does
+    // not fit google.protobuf.Timestamp's 0001..9999 range).
+    oneof until {
+      google.protobuf.Timestamp expires_at = 2;
+      bool permanent = 3;
+    }
   }
 
   message ResourceUnblocked {
