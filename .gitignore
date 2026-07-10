@@ -18,3 +18,6 @@ bin/
 # Env
 *.env
 .env.*
+
+# jqwik records failing samples here between runs — a local artifact, not source
+.jqwik-database
