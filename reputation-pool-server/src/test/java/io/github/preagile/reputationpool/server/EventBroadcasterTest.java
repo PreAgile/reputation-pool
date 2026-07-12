@@ -64,6 +64,16 @@ class EventBroadcasterTest {
         }
     }
 
+    private static Runnable capturing(List<Throwable> sink, Runnable body) {
+        return () -> {
+            try {
+                body.run();
+            } catch (Throwable t) {
+                sink.add(t);
+            }
+        };
+    }
+
     // ---------- example-based behavior specs ----------
 
     @Test
@@ -275,19 +285,20 @@ class EventBroadcasterTest {
         broadcaster.subscribe(subscriber);
 
         int n = 200;
+        List<Throwable> failures = new CopyOnWriteArrayList<>();
         CountDownLatch start = new CountDownLatch(1);
-        Thread producer = new Thread(() -> {
+        Thread producer = new Thread(capturing(failures, () -> {
             awaitQuietly(start);
             for (int i = 0; i < n; i++) {
                 broadcaster.emit(unblocked("e" + i));
             }
-        });
-        Thread waker = new Thread(() -> {
+        }));
+        Thread waker = new Thread(capturing(failures, () -> {
             awaitQuietly(start);
             for (int i = 0; i < n * 4; i++) {
                 subscriber.becomeReady(); // fires onReady -> drain, contending with the producer's drain
             }
-        });
+        }));
         producer.start();
         waker.start();
         start.countDown();
@@ -295,6 +306,7 @@ class EventBroadcasterTest {
         waker.join();
         subscriber.becomeReady(); // final drain flushes anything still buffered
 
+        assertThat(failures).as("a worker thread threw").isEmpty();
         assertThat(subscriber.concurrentOnNext)
                 .as("onNext must never run on two threads at once")
                 .isFalse();
@@ -309,7 +321,7 @@ class EventBroadcasterTest {
      * concurrent onNext) and no event is lost. Order across producers is undefined and not asserted.
      */
     @RepeatedTest(150)
-    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    @Timeout(value = 15, unit = TimeUnit.SECONDS)
     void concurrentEmitsFromManyThreadsNeverDeliverConcurrentlyAndLoseNoEvents() throws InterruptedException {
         int threads = 4;
         int perThread = 100;
@@ -318,22 +330,24 @@ class EventBroadcasterTest {
         FakeStreamObserver subscriber = new FakeStreamObserver(true);
         broadcaster.subscribe(subscriber);
 
+        List<Throwable> failures = new CopyOnWriteArrayList<>();
         CountDownLatch start = new CountDownLatch(1);
         ExecutorService pool = Executors.newFixedThreadPool(threads);
         for (int t = 0; t < threads; t++) {
             int base = t;
-            pool.submit(() -> {
+            pool.submit(capturing(failures, () -> {
                 awaitQuietly(start);
                 for (int i = 0; i < perThread; i++) {
                     broadcaster.emit(unblocked("t" + base + "-" + i));
                 }
-            });
+            }));
         }
         start.countDown();
         pool.shutdown();
-        assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        assertThat(pool.awaitTermination(8, TimeUnit.SECONDS)).isTrue();
         subscriber.becomeReady(); // flush any tail left buffered
 
+        assertThat(failures).as("a worker thread threw").isEmpty();
         assertThat(subscriber.concurrentOnNext)
                 .as("onNext must never run on two threads at once")
                 .isFalse();
@@ -351,21 +365,23 @@ class EventBroadcasterTest {
         EventBroadcaster broadcaster = new EventBroadcaster();
         FakeStreamObserver late = new FakeStreamObserver(true);
 
+        List<Throwable> failures = new CopyOnWriteArrayList<>();
         CountDownLatch start = new CountDownLatch(1);
-        Thread closer = new Thread(() -> {
+        Thread closer = new Thread(capturing(failures, () -> {
             awaitQuietly(start);
             broadcaster.close();
-        });
-        Thread subscriber = new Thread(() -> {
+        }));
+        Thread subscriber = new Thread(capturing(failures, () -> {
             awaitQuietly(start);
             broadcaster.subscribe(late);
-        });
+        }));
         closer.start();
         subscriber.start();
         start.countDown();
         closer.join();
         subscriber.join();
 
+        assertThat(failures).as("a worker thread threw").isEmpty();
         assertThat(late.completed)
                 .as("a subscriber racing close is completed, not orphaned")
                 .isTrue();
