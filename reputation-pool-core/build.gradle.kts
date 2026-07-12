@@ -1,3 +1,5 @@
+import org.gradle.api.component.AdhocComponentWithVariants
+
 plugins {
     `java-library`
     // Shared test helpers (e.g. SettableClock) live in src/testFixtures and are consumed by this
@@ -7,6 +9,7 @@ plugins {
     // On-demand mutation testing via `./gradlew pitest`. 1.19.0 is the first release
     // that supports Gradle 9.x; it is deliberately NOT wired into `build` or CI.
     id("info.solidsoft.pitest") version "1.19.0"
+    id("com.vanniktech.maven.publish") version "0.37.0"
 }
 
 java {
@@ -14,11 +17,59 @@ java {
         // First LTS where virtual threads no longer pin the carrier inside synchronized (JEP 491)
         languageVersion = JavaLanguageVersion.of(25)
     }
-    // withSourcesJar()/withJavadocJar() are added when Maven Central publishing lands (L2+).
 }
 
 repositories {
     mavenCentral()
+}
+
+mavenPublishing {
+    publishToMavenCentral()
+    signAllPublications()
+    coordinates("io.github.preagile", "reputation-pool-core", project.version.toString())
+    pom {
+        name = "Reputation Pool Core"
+        description =
+            "A pure-Java, zero-dependency decision engine for leasable resources that carry a " +
+                "reputation (proxies, accounts, sessions): decide whether to lend a resource for a " +
+                "context right now, as a pure function over immutable state."
+        url = "https://github.com/PreAgile/reputation-pool"
+        licenses {
+            license {
+                name = "The Apache License, Version 2.0"
+                url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
+            }
+        }
+        developers {
+            developer {
+                id = "preagile"
+                name = "meyonsoo"
+                url = "https://github.com/PreAgile"
+            }
+        }
+        scm {
+            url = "https://github.com/PreAgile/reputation-pool"
+            connection = "scm:git:https://github.com/PreAgile/reputation-pool.git"
+            developerConnection = "scm:git:ssh://git@github.com/PreAgile/reputation-pool.git"
+        }
+    }
+}
+
+// Keep internal test fixtures (SettableClock etc.) out of the Central release — siblings consume
+// them in-build via testFixtures(project(...)), and they are not part of the library's public API.
+// Run in afterEvaluate: the maven-publish plugin registers the test-fixtures *sources* variant
+// (testFixturesSourcesElements) lazily, so it does not yet exist during script evaluation.
+afterEvaluate {
+    (components["java"] as AdhocComponentWithVariants).let { java ->
+        listOf(
+                "testFixturesApiElements",
+                "testFixturesRuntimeElements",
+                // vanniktech's withSourcesJar() also publishes a test-fixtures sources jar via this
+                // variant; skip it too so no test-fixtures artifact reaches Central.
+                "testFixturesSourcesElements")
+            .mapNotNull { configurations.findByName(it) }
+            .forEach { java.withVariantsFromConfiguration(it) { skip() } }
+    }
 }
 
 dependencies {
