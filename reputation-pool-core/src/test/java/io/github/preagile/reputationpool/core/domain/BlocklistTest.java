@@ -13,13 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.preagile.reputationpool.core.pool;
+package io.github.preagile.reputationpool.core.domain;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
-import io.github.preagile.reputationpool.core.domain.ResourceId;
-import io.github.preagile.reputationpool.core.domain.ResourceKind;
 import java.time.Instant;
 import java.util.HashMap;
 import net.jqwik.api.ForAll;

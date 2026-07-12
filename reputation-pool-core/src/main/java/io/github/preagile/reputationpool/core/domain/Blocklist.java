@@ -13,9 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.preagile.reputationpool.core.pool;
+package io.github.preagile.reputationpool.core.domain;
 
-import io.github.preagile.reputationpool.core.domain.ResourceId;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
