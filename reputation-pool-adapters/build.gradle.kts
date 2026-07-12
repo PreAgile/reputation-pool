@@ -18,7 +18,7 @@ dependencies {
     // Demo adapters depend inward on the pure core; the dependency arrow never points the other way.
     api(project(":reputation-pool-core"))
     // Adapters may use frameworks (core may not). SLF4J is the only runtime dependency the demo needs.
-    implementation("org.slf4j:slf4j-api:2.0.17")
+    implementation("org.slf4j:slf4j-api:2.0.18")
 
     testImplementation(platform("org.junit:junit-bom:6.1.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -28,9 +28,9 @@ dependencies {
     testImplementation("org.assertj:assertj-core:3.27.7")
     // WireMock drives the integration test: a real HTTP endpoint the adapter probes over java.net.http.
     // Used programmatically (WireMockServer), not via its JUnit extension, to stay off the JUnit version.
-    testImplementation("org.wiremock:wiremock:3.9.1")
+    testImplementation("org.wiremock:wiremock:3.13.2")
     // A no-op SLF4J provider so the logging EventSink under test prints nothing and no NOP warning fires.
-    testRuntimeOnly("org.slf4j:slf4j-nop:2.0.17")
+    testRuntimeOnly("org.slf4j:slf4j-nop:2.0.18")
 }
 
 tasks.test {
