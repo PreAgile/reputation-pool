@@ -15,9 +15,12 @@
  */
 package io.github.preagile.reputationpool.core.pool;
 
+import io.github.preagile.reputationpool.core.domain.Blocklist;
+import io.github.preagile.reputationpool.core.domain.CellKey;
 import io.github.preagile.reputationpool.core.domain.Context;
 import io.github.preagile.reputationpool.core.domain.Outcome;
 import io.github.preagile.reputationpool.core.domain.PoolEvent;
+import io.github.preagile.reputationpool.core.domain.PoolSnapshot;
 import io.github.preagile.reputationpool.core.domain.ReputationCell;
 import io.github.preagile.reputationpool.core.domain.ResourceId;
 import io.github.preagile.reputationpool.core.domain.ResourceState;
@@ -28,6 +31,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -264,6 +268,43 @@ public final class ResourcePool {
         }
     }
 
+    /**
+     * Captures the pool's whole durable state — cells, blocklist, and registered resources — as one
+     * immutable {@link PoolSnapshot} for a {@link io.github.preagile.reputationpool.core.port.ResourceStore}
+     * to persist. Leases are runtime coordination and are intentionally not included.
+     *
+     * <p>Each of the three structures is read with its own atomic discipline, so the snapshot is
+     * internally consistent per field; it does not freeze the whole pool, so an operation racing with
+     * this call may land in this snapshot or the next checkpoint. That is fine for a periodic
+     * checkpoint — the missed change is captured next time.
+     *
+     * @return the current durable state
+     */
+    public PoolSnapshot snapshot() {
+        return new PoolSnapshot(Map.copyOf(cells), blocklist.get(), Set.copyOf(registered));
+    }
+
+    /**
+     * Loads a previously captured {@link PoolSnapshot} into this pool, rehydrating cells, blocklist,
+     * and registered resources. Leases are not restored: nothing is held immediately after a restart.
+     *
+     * <p>Intended to be called <strong>once at startup, before the pool serves any traffic</strong>.
+     * It is not safe against concurrent operations — it writes the three structures without a global
+     * lock — but it now replaces all durable state with the snapshot rather than merging into it, so
+     * running it on a non-empty pool leaves the pool as exactly the snapshot instead of corrupting it.
+     *
+     * @param snapshot the durable state to load
+     * @throws NullPointerException if {@code snapshot} is null
+     */
+    public void restore(PoolSnapshot snapshot) {
+        Objects.requireNonNull(snapshot, "snapshot must not be null");
+        cells.clear();
+        cells.putAll(snapshot.cells());
+        blocklist.set(snapshot.blocklist());
+        registered.clear();
+        registered.addAll(snapshot.registered());
+    }
+
     private static boolean isSelectable(ResourceState state) {
         return state == ResourceState.HEALTHY || state == ResourceState.RECOVERING;
     }
@@ -274,7 +315,4 @@ public final class ResourcePool {
             throw new IllegalArgumentException("duration must be positive");
         }
     }
-
-    /** The identity of a reputation cell: one per {@code (resource × context)} pair. */
-    private record CellKey(ResourceId resource, Context context) {}
 }
