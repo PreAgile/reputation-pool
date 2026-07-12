@@ -55,7 +55,9 @@ public record PoolSnapshot(Map<CellKey, ReputationCell> cells, Blocklist blockli
      *     {@code registered}, is null
      */
     public PoolSnapshot {
+        Objects.requireNonNull(cells, "cells must not be null");
         Objects.requireNonNull(blocklist, "blocklist must not be null");
+        Objects.requireNonNull(registered, "registered must not be null");
         // defensive, immutable copies; also reject null keys, values, and elements
         cells = Map.copyOf(cells);
         registered = Set.copyOf(registered);

@@ -290,16 +290,18 @@ public final class ResourcePool {
      *
      * <p>Intended to be called <strong>once at startup, before the pool serves any traffic</strong>.
      * It is not safe against concurrent operations — it writes the three structures without a global
-     * lock — and it merges into (rather than clears) any existing state, so it must run on a fresh
-     * pool.
+     * lock — but it now replaces all durable state with the snapshot rather than merging into it, so
+     * running it on a non-empty pool leaves the pool as exactly the snapshot instead of corrupting it.
      *
      * @param snapshot the durable state to load
      * @throws NullPointerException if {@code snapshot} is null
      */
     public void restore(PoolSnapshot snapshot) {
         Objects.requireNonNull(snapshot, "snapshot must not be null");
+        cells.clear();
         cells.putAll(snapshot.cells());
         blocklist.set(snapshot.blocklist());
+        registered.clear();
         registered.addAll(snapshot.registered());
     }
 
