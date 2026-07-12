@@ -105,10 +105,20 @@ public final class PostgresResourceStore implements ResourceStore {
                 upsertMeta(connection);
                 connection.commit();
             } catch (SQLException | RuntimeException e) {
-                connection.rollback();
+                try {
+                    connection.rollback();
+                } catch (SQLException rollbackEx) {
+                    // Keep the original failure as the primary exception; a failed rollback is
+                    // secondary context, not a replacement for what actually went wrong.
+                    e.addSuppressed(rollbackEx);
+                }
                 throw e;
             } finally {
-                connection.setAutoCommit(previousAutoCommit);
+                try {
+                    connection.setAutoCommit(previousAutoCommit);
+                } catch (SQLException ignored) {
+                    // Avoid masking the primary exception; the connection is closing anyway.
+                }
             }
         } catch (SQLException e) {
             throw new PersistenceException("failed to save snapshot", e);
@@ -118,13 +128,32 @@ public final class PostgresResourceStore implements ResourceStore {
     @Override
     public Optional<PoolSnapshot> load() {
         try (Connection connection = dataSource.getConnection()) {
-            if (!snapshotExists(connection)) {
-                return Optional.empty();
+            boolean previousAutoCommit = connection.getAutoCommit();
+            int previousIsolation = connection.getTransactionIsolation();
+            // Read every table inside one REPEATABLE READ transaction so a concurrent save() commit
+            // cannot yield a torn snapshot (e.g. cells from one checkpoint, blocklist from the next).
+            connection.setAutoCommit(false);
+            connection.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ);
+            try {
+                Optional<PoolSnapshot> snapshot;
+                if (!snapshotExists(connection)) {
+                    snapshot = Optional.empty();
+                } else {
+                    Map<CellKey, ReputationCell> cells = loadCells(connection);
+                    Blocklist blocklist = loadBlocklist(connection);
+                    Set<ResourceId> registered = loadRegistered(connection);
+                    snapshot = Optional.of(new PoolSnapshot(cells, blocklist, registered));
+                }
+                connection.commit();
+                return snapshot;
+            } finally {
+                try {
+                    connection.setTransactionIsolation(previousIsolation);
+                    connection.setAutoCommit(previousAutoCommit);
+                } catch (SQLException ignored) {
+                    // Avoid masking the primary exception; the connection is closing anyway.
+                }
             }
-            Map<CellKey, ReputationCell> cells = loadCells(connection);
-            Blocklist blocklist = loadBlocklist(connection);
-            Set<ResourceId> registered = loadRegistered(connection);
-            return Optional.of(new PoolSnapshot(cells, blocklist, registered));
         } catch (SQLException e) {
             throw new PersistenceException("failed to load snapshot", e);
         }
@@ -134,7 +163,8 @@ public final class PostgresResourceStore implements ResourceStore {
 
     private static void deleteAll(Connection connection) throws SQLException {
         try (Statement statement = connection.createStatement()) {
-            statement.addBatch("DELETE FROM cell_outcome");
+            // Deleting cell cascades to its cell_outcome rows (ON DELETE CASCADE), so no explicit
+            // DELETE FROM cell_outcome is needed.
             statement.addBatch("DELETE FROM cell");
             statement.addBatch("DELETE FROM blocklist_entry");
             statement.addBatch("DELETE FROM registered_resource");
@@ -151,7 +181,7 @@ public final class PostgresResourceStore implements ResourceStore {
         String insertOutcome =
                 """
                 INSERT INTO cell_outcome (resource_kind, resource_value, context, ordinal, success,
-                    failure_type, latency_ms)
+                    failure_type, latency_ns)
                 VALUES (?, ?, ?, ?, ?, ?, ?)""";
         try (PreparedStatement cellStatement = connection.prepareStatement(insertCell);
                 PreparedStatement outcomeStatement = connection.prepareStatement(insertOutcome)) {
@@ -164,8 +194,8 @@ public final class PostgresResourceStore implements ResourceStore {
                 cellStatement.setInt(5, cell.consecutiveFailures());
                 cellStatement.setInt(6, cell.consecutiveSuccesses());
                 cellStatement.setString(7, cell.state().name());
-                cellStatement.setTimestamp(8, SnapshotMapper.toTimestamp(cell.cooldownUntil()));
-                cellStatement.setTimestamp(9, SnapshotMapper.toTimestamp(cell.updatedAt()));
+                cellStatement.setLong(8, SnapshotMapper.instantToEpochNanos(cell.cooldownUntil()));
+                cellStatement.setLong(9, SnapshotMapper.instantToEpochNanos(cell.updatedAt()));
                 cellStatement.addBatch();
 
                 List<Outcome> window = cell.window();
@@ -177,7 +207,7 @@ public final class PostgresResourceStore implements ResourceStore {
                     outcomeStatement.setInt(4, ordinal);
                     outcomeStatement.setBoolean(5, row.success());
                     outcomeStatement.setString(6, row.failureType());
-                    outcomeStatement.setLong(7, row.latencyMs());
+                    outcomeStatement.setLong(7, row.latencyNs());
                     outcomeStatement.addBatch();
                 }
             }
@@ -193,7 +223,12 @@ public final class PostgresResourceStore implements ResourceStore {
                 ResourceId resource = entry.getKey();
                 statement.setString(1, resource.kind().name());
                 statement.setString(2, resource.value());
-                statement.setTimestamp(3, SnapshotMapper.blocklistUntilToTimestamp(entry.getValue()));
+                Long until = SnapshotMapper.blocklistUntilToEpochNanos(entry.getValue());
+                if (until == null) {
+                    statement.setNull(3, java.sql.Types.BIGINT);
+                } else {
+                    statement.setLong(3, until);
+                }
                 statement.addBatch();
             }
             statement.executeBatch();
@@ -253,8 +288,8 @@ public final class PostgresResourceStore implements ResourceStore {
                         resultSet.getInt(6),
                         windows.getOrDefault(coordinate, List.of()),
                         ResourceState.valueOf(resultSet.getString(7)),
-                        SnapshotMapper.toInstant(resultSet.getTimestamp(8)),
-                        SnapshotMapper.toInstant(resultSet.getTimestamp(9)));
+                        SnapshotMapper.epochNanosToInstant(resultSet.getLong(8)),
+                        SnapshotMapper.epochNanosToInstant(resultSet.getLong(9)));
                 cells.put(new CellKey(resource, context), cell);
             }
         }
@@ -265,7 +300,7 @@ public final class PostgresResourceStore implements ResourceStore {
         Map<Coordinate, List<Outcome>> windows = new HashMap<>();
         String sql =
                 """
-                SELECT resource_kind, resource_value, context, success, failure_type, latency_ms
+                SELECT resource_kind, resource_value, context, success, failure_type, latency_ns
                 FROM cell_outcome
                 ORDER BY resource_kind, resource_value, context, ordinal""";
         try (Statement statement = connection.createStatement();
@@ -291,7 +326,9 @@ public final class PostgresResourceStore implements ResourceStore {
             while (resultSet.next()) {
                 ResourceId resource =
                         new ResourceId(ResourceKind.valueOf(resultSet.getString(1)), resultSet.getString(2));
-                entries.put(resource, SnapshotMapper.timestampToBlocklistUntil(resultSet.getTimestamp(3)));
+                long untilNanos = resultSet.getLong(3);
+                Long until = resultSet.wasNull() ? null : untilNanos;
+                entries.put(resource, SnapshotMapper.epochNanosToBlocklistUntil(until));
             }
         }
         return new Blocklist(entries);

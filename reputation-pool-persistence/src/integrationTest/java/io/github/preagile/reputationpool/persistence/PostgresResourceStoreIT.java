@@ -100,12 +100,14 @@ class PostgresResourceStoreIT {
                 4,
                 0,
                 List.of(
-                        new Outcome.Success(Duration.ofMillis(120)),
+                        // A sub-millisecond latency: exercises nanosecond precision against a real DB.
+                        new Outcome.Success(Duration.ofNanos(1_500_000)),
                         new Outcome.Failure(FailureType.TIMEOUT, Duration.ofMillis(2000)),
                         new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(50))),
                 ResourceState.COOLING,
                 Instant.parse("2026-07-12T10:00:00Z"),
-                Instant.parse("2026-07-12T09:30:00Z"));
+                // updatedAt carries a sub-microsecond nanosecond fraction that timestamptz would truncate.
+                Instant.ofEpochSecond(1_752_312_600L, 123_456_789));
 
         PoolSnapshot snapshot = new PoolSnapshot(
                 Map.of(new CellKey(proxy, market), healthy, new CellKey(account, market), cooling),

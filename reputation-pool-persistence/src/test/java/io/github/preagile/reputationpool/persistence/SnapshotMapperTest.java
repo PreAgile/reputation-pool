@@ -20,7 +20,6 @@ import static org.assertj.core.api.Assertions.assertThat;
 import io.github.preagile.reputationpool.core.domain.FailureType;
 import io.github.preagile.reputationpool.core.domain.Outcome;
 import io.github.preagile.reputationpool.persistence.SnapshotMapper.OutcomeRow;
-import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -32,8 +31,10 @@ import org.junit.jupiter.api.Test;
 /**
  * Behavior specification for {@link SnapshotMapper} — the row&#8596;domain translation, exercised
  * with no database so it runs in the Docker-free {@code build}. The permanent-block case is the
- * regression that matters most: {@link Instant#MAX} does not fit a {@code timestamptz}, so it must
- * survive the trip through SQL {@code NULL}.
+ * regression that matters most: {@link Instant#MAX} does not fit an epoch-nanos {@code bigint}, so it
+ * must survive the trip through SQL {@code NULL}. Precision is the second: latency is carried in
+ * nanoseconds and instants as epoch-nanoseconds so sub-millisecond and sub-microsecond values are not
+ * silently truncated.
  */
 class SnapshotMapperTest {
 
@@ -49,9 +50,9 @@ class SnapshotMapperTest {
             OutcomeRow row = SnapshotMapper.outcomeToRow(success);
             assertThat(row.success()).isTrue();
             assertThat(row.failureType()).isNull();
-            assertThat(row.latencyMs()).isEqualTo(1234);
+            assertThat(row.latencyNs()).isEqualTo(1_234_000_000L);
 
-            assertThat(SnapshotMapper.toOutcome(row.success(), row.failureType(), row.latencyMs()))
+            assertThat(SnapshotMapper.toOutcome(row.success(), row.failureType(), row.latencyNs()))
                     .isEqualTo(success);
         }
 
@@ -63,9 +64,9 @@ class SnapshotMapperTest {
             OutcomeRow row = SnapshotMapper.outcomeToRow(failure);
             assertThat(row.success()).isFalse();
             assertThat(row.failureType()).isEqualTo("BLOCKED");
-            assertThat(row.latencyMs()).isEqualTo(50);
+            assertThat(row.latencyNs()).isEqualTo(50_000_000L);
 
-            assertThat(SnapshotMapper.toOutcome(row.success(), row.failureType(), row.latencyMs()))
+            assertThat(SnapshotMapper.toOutcome(row.success(), row.failureType(), row.latencyNs()))
                     .isEqualTo(failure);
         }
 
@@ -75,9 +76,28 @@ class SnapshotMapperTest {
             for (FailureType type : FailureType.values()) {
                 Outcome failure = new Outcome.Failure(type, Duration.ofMillis(7));
                 OutcomeRow row = SnapshotMapper.outcomeToRow(failure);
-                assertThat(SnapshotMapper.toOutcome(row.success(), row.failureType(), row.latencyMs()))
+                assertThat(SnapshotMapper.toOutcome(row.success(), row.failureType(), row.latencyNs()))
                         .isEqualTo(failure);
             }
+        }
+
+        @Test
+        @DisplayName("sub-millisecond latency survives the round-trip (nanosecond precision, not millis)")
+        void subMillisecondLatencyRoundTrips() {
+            // A single nanosecond and 1.5ms both truncate to the wrong value under toMillis().
+            Outcome oneNano = new Outcome.Success(Duration.ofNanos(1));
+            Outcome onePointFiveMillis = new Outcome.Failure(FailureType.SLOW, Duration.ofNanos(1_500_000));
+
+            OutcomeRow nanoRow = SnapshotMapper.outcomeToRow(oneNano);
+            assertThat(nanoRow.latencyNs()).isEqualTo(1L);
+            assertThat(SnapshotMapper.toOutcome(nanoRow.success(), nanoRow.failureType(), nanoRow.latencyNs()))
+                    .isEqualTo(oneNano);
+
+            OutcomeRow subMilliRow = SnapshotMapper.outcomeToRow(onePointFiveMillis);
+            assertThat(subMilliRow.latencyNs()).isEqualTo(1_500_000L);
+            assertThat(SnapshotMapper.toOutcome(
+                            subMilliRow.success(), subMilliRow.failureType(), subMilliRow.latencyNs()))
+                    .isEqualTo(onePointFiveMillis);
         }
 
         @Test
@@ -95,7 +115,7 @@ class SnapshotMapperTest {
             // rows read back ordered by ordinal -> outcomes, as the store reads it
             List<Outcome> rebuilt = new ArrayList<>();
             for (OutcomeRow row : rows) {
-                rebuilt.add(SnapshotMapper.toOutcome(row.success(), row.failureType(), row.latencyMs()));
+                rebuilt.add(SnapshotMapper.toOutcome(row.success(), row.failureType(), row.latencyNs()));
             }
 
             assertThat(rebuilt).containsExactlyElementsOf(window);
@@ -109,29 +129,30 @@ class SnapshotMapperTest {
         @Test
         @DisplayName("a permanent block (Instant.MAX) maps to NULL and back to Instant.MAX")
         void permanentBlockIsNull() {
-            assertThat(SnapshotMapper.blocklistUntilToTimestamp(Instant.MAX)).isNull();
-            assertThat(SnapshotMapper.timestampToBlocklistUntil(null)).isEqualTo(Instant.MAX);
+            assertThat(SnapshotMapper.blocklistUntilToEpochNanos(Instant.MAX)).isNull();
+            assertThat(SnapshotMapper.epochNanosToBlocklistUntil(null)).isEqualTo(Instant.MAX);
         }
 
         @Test
-        @DisplayName("a finite expiry maps to a timestamp and back to the same instant")
+        @DisplayName("a finite expiry maps to epoch-nanos and back to the same instant")
         void finiteBlockRoundTrips() {
             Instant until = Instant.parse("2026-07-12T10:15:30Z");
 
-            Timestamp stored = SnapshotMapper.blocklistUntilToTimestamp(until);
+            Long stored = SnapshotMapper.blocklistUntilToEpochNanos(until);
             assertThat(stored).isNotNull();
-            assertThat(SnapshotMapper.timestampToBlocklistUntil(stored)).isEqualTo(until);
+            assertThat(SnapshotMapper.epochNanosToBlocklistUntil(stored)).isEqualTo(until);
         }
     }
 
     @Nested
-    @DisplayName("plain instant columns round-trip")
+    @DisplayName("plain instant columns round-trip as epoch-nanoseconds")
     class PlainInstant {
 
         @Test
-        @DisplayName("the Instant.EPOCH 'not cooling' cooldown sentinel is preserved")
+        @DisplayName("the Instant.EPOCH 'not cooling' cooldown sentinel is preserved (epoch-nanos 0)")
         void epochSentinelPreserved() {
-            assertThat(SnapshotMapper.toInstant(SnapshotMapper.toTimestamp(Instant.EPOCH)))
+            assertThat(SnapshotMapper.instantToEpochNanos(Instant.EPOCH)).isZero();
+            assertThat(SnapshotMapper.epochNanosToInstant(SnapshotMapper.instantToEpochNanos(Instant.EPOCH)))
                     .isEqualTo(Instant.EPOCH);
         }
 
@@ -139,8 +160,20 @@ class SnapshotMapperTest {
         @DisplayName("an ordinary instant is preserved")
         void ordinaryInstantPreserved() {
             Instant instant = Instant.parse("2026-07-12T08:00:00Z");
-            assertThat(SnapshotMapper.toInstant(SnapshotMapper.toTimestamp(instant)))
+            assertThat(SnapshotMapper.epochNanosToInstant(SnapshotMapper.instantToEpochNanos(instant)))
                     .isEqualTo(instant);
+        }
+
+        @Test
+        @DisplayName("a sub-microsecond instant (nanosecond fraction) round-trips exactly")
+        void subMicrosecondInstantRoundTrips() {
+            // timestamptz is microsecond-capped; the 789 trailing nanos would be lost there.
+            Instant instant = Instant.ofEpochSecond(1_752_312_000L, 123_456_789);
+
+            long epochNanos = SnapshotMapper.instantToEpochNanos(instant);
+            Instant rebuilt = SnapshotMapper.epochNanosToInstant(epochNanos);
+            assertThat(rebuilt).isEqualTo(instant);
+            assertThat(rebuilt.getNano()).isEqualTo(123_456_789);
         }
     }
 }
