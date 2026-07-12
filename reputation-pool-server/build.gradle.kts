@@ -35,6 +35,8 @@ dependencies {
     // whereas javax.annotation:javax.annotation-api is CDDL — the "Tomcat 6" vintage is not a defect.
     compileOnly("org.apache.tomcat:annotations-api:6.0.53")
 
+    // In-process transport: contract tests ride the real gRPC wiring without sockets or ports.
+    testImplementation("io.grpc:grpc-inprocess:$grpcVersion")
     testImplementation(platform("org.junit:junit-bom:6.1.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
