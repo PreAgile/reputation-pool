@@ -1,3 +1,5 @@
+import org.gradle.api.component.AdhocComponentWithVariants
+
 plugins {
     `java-library`
     // Shared test helpers (e.g. SettableClock) live in src/testFixtures and are consumed by this
@@ -50,6 +52,23 @@ mavenPublishing {
             connection = "scm:git:https://github.com/PreAgile/reputation-pool.git"
             developerConnection = "scm:git:ssh://git@github.com/PreAgile/reputation-pool.git"
         }
+    }
+}
+
+// Keep internal test fixtures (SettableClock etc.) out of the Central release — siblings consume
+// them in-build via testFixtures(project(...)), and they are not part of the library's public API.
+// Run in afterEvaluate: the maven-publish plugin registers the test-fixtures *sources* variant
+// (testFixturesSourcesElements) lazily, so it does not yet exist during script evaluation.
+afterEvaluate {
+    (components["java"] as AdhocComponentWithVariants).let { java ->
+        listOf(
+                "testFixturesApiElements",
+                "testFixturesRuntimeElements",
+                // vanniktech's withSourcesJar() also publishes a test-fixtures sources jar via this
+                // variant; skip it too so no test-fixtures artifact reaches Central.
+                "testFixturesSourcesElements")
+            .mapNotNull { configurations.findByName(it) }
+            .forEach { java.withVariantsFromConfiguration(it) { skip() } }
     }
 }
 
