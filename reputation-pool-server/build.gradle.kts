@@ -25,6 +25,13 @@ dependencies {
     // The server ring depends inward on the pure core; the dependency arrow never points the other way.
     api(project(":reputation-pool-core"))
 
+    // The composition root wires the persistence adapter (a ResourceStore) into the pool's lifecycle.
+    // Versions match the persistence module so the driver/Flyway resolve to one artifact each.
+    implementation(project(":reputation-pool-persistence"))
+    implementation("org.postgresql:postgresql:42.7.13")
+    implementation("org.flywaydb:flyway-core:12.11.0")
+    runtimeOnly("org.flywaydb:flyway-database-postgresql:12.11.0")
+
     implementation("io.grpc:grpc-protobuf:$grpcVersion")
     implementation("io.grpc:grpc-stub:$grpcVersion")
     implementation("com.google.protobuf:protobuf-java:$protobufVersion")
