@@ -31,6 +31,11 @@ jobs:
       - name: Build, Format check, Arch & Test
         run: ./gradlew build --no-daemon
 
+      # The persistence integration tests are deliberately excluded from `build` (they need Docker) and
+      # run here, where the runner's Docker daemon powers Testcontainers against a real PostgreSQL.
+      - name: Persistence integration tests (Testcontainers)
+        run: ./gradlew :reputation-pool-persistence:integrationTest --no-daemon
+
       - name: Upload test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
