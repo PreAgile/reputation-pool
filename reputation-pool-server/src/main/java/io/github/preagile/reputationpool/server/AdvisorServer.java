@@ -184,7 +184,8 @@ public final class AdvisorServer {
 
     /**
      * Orderly shutdown that leaves a consistent final checkpoint. In order: (1) stop the periodic
-     * checkpointer so no background save races the shutdown; (2) complete event streams so subscribers
+     * checkpointer and await its termination so any in-flight periodic save finishes and is drained
+     * before the final save — the two can then never overlap; (2) complete event streams so subscribers
      * see a clean end instead of a transport reset; (3) drain in-flight RPCs within the grace period so
      * the pool's state is final (any reports still arriving are applied first); (4) take one final
      * checkpoint of that now-stable state, so a planned restart loses nothing.
@@ -194,7 +195,10 @@ public final class AdvisorServer {
      */
     public void shutdown(Duration grace) throws InterruptedException {
         if (checkpointer != null) {
-            checkpointer.shutdownNow();
+            checkpointer.shutdown();
+            if (!checkpointer.awaitTermination(5, TimeUnit.SECONDS)) {
+                checkpointer.shutdownNow();
+            }
         }
         broadcaster.close();
         server.shutdown();
