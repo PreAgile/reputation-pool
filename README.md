@@ -84,7 +84,7 @@ resource everywhere.
 
 | Module | Description | Status |
 |---|---|---|
-| `reputation-pool-core` | Pure decision engine — domain, engine, ports. JDK only. | In progress |
+| `reputation-pool-core` | Pure decision engine — domain, engine, ports. JDK only. | Done |
 | `reputation-pool-adapters` | Demo resource kinds (proxy, account) implementing the ports. | Done |
 | `reputation-pool-server` | Spring adapter ring — gRPC advisor done (L2); persistence, virtual-thread probing, and observability next (L3). | In progress |
 
@@ -97,7 +97,7 @@ boundary is guarded by CI, not by convention.
 ```mermaid
 flowchart TB
     adapters["reputation-pool-adapters — L1 (done)<br/>proxy and account demos"]
-    server["reputation-pool-server — L2–L3 (planned)<br/>gRPC advisor · persistence · observability"]
+    server["reputation-pool-server — L2 (done) · L3 (planned)<br/>gRPC advisor done · persistence next"]
 
     subgraph core["reputation-pool-core — pure Java, JDK only"]
         M1["M1 (done) · decision engine<br/>pure (state, outcome, now) → new state"]
