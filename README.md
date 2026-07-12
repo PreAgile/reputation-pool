@@ -12,9 +12,10 @@ database, no network. Time, storage, health-probing, and observability are pushe
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Java](https://img.shields.io/badge/Java-25%2B-orange.svg)](https://openjdk.org/projects/jdk/25/)
 
-> **Status — early development.** `reputation-pool-core` (the pure decision engine) is the current focus.
-> The adapter, gRPC, and server layers are on the [roadmap](#roadmap) and are added as separate modules in
-> this same repository. See [Design notes](#design-notes) for the full target architecture.
+> **Status — early development.** `reputation-pool-core` (the pure decision engine) is published to Maven
+> Central at `0.1.0`. The L1 adapters and the L2 gRPC advisor are done; L3 persistence is next. Layers are
+> added as separate modules in this same repository — see the [roadmap](#roadmap) and
+> [Design notes](#design-notes) for the full target architecture.
 
 ## Why
 
@@ -37,11 +38,10 @@ platform, and logs don't catch it. This engine addresses that with three structu
 
 ## Getting started
 
-> Not yet published to Maven Central — planned once the gRPC layer lands. Until then, build from source
-> (`./gradlew build`) or use a composite/included build.
+> Available on Maven Central. Requires [JDK 25+](#requirements). Or build from source (`./gradlew build`).
 
 ```kotlin
-// build.gradle.kts (planned coordinates)
+// build.gradle.kts
 dependencies {
     implementation("io.github.preagile:reputation-pool-core:0.1.0")
 }
@@ -84,9 +84,9 @@ resource everywhere.
 
 | Module | Description | Status |
 |---|---|---|
-| `reputation-pool-core` | Pure decision engine — domain, engine, ports. JDK only. | In progress |
+| `reputation-pool-core` | Pure decision engine — domain, engine, ports. JDK only. | Done |
 | `reputation-pool-adapters` | Demo resource kinds (proxy, account) implementing the ports. | Done |
-| `reputation-pool-server` | Spring adapter ring — gRPC, persistence, virtual-thread probing, observability. | Planned |
+| `reputation-pool-server` | Spring adapter ring — gRPC advisor done (L2); persistence, virtual-thread probing, and observability next (L3). | In progress |
 
 ## Architecture
 
@@ -97,7 +97,7 @@ boundary is guarded by CI, not by convention.
 ```mermaid
 flowchart TB
     adapters["reputation-pool-adapters — L1 (done)<br/>proxy and account demos"]
-    server["reputation-pool-server — L2–L3 (planned)<br/>gRPC advisor · persistence · observability"]
+    server["reputation-pool-server — L2 (done) · L3 (planned)<br/>gRPC advisor done · persistence next"]
 
     subgraph core["reputation-pool-core — pure Java, JDK only"]
         M1["M1 (done) · decision engine<br/>pure (state, outcome, now) → new state"]
@@ -140,7 +140,7 @@ ArchUnit purity rules. The build provisions JDK 25 automatically via the Foojay 
       and the first `EventSink` port; 32-thread lease-exclusivity tests.
 - [x] **L1 — adapter demos**: proxy and account adapters driven by the same engine — per-kind outcome
       classifiers and WireMock end-to-end cooling/recovery tests.
-- [ ] **L2 — gRPC advisor**: `acquire / report / renew / release` + event stream; publish core to Maven Central.
+- [x] **L2 — gRPC advisor**: `acquire / report / renew / release` + event stream; publish core to Maven Central.
 - [ ] **L3 — persistence**: snapshot + audit trail behind the `ResourceStore` port.
 
 ## Design notes
