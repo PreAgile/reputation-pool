@@ -27,9 +27,17 @@ import io.grpc.Status;
 import io.grpc.StatusRuntimeException;
 import io.grpc.stub.ServerCallStreamObserver;
 import java.time.Instant;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+import net.jqwik.api.ForAll;
+import net.jqwik.api.Property;
+import net.jqwik.api.constraints.IntRange;
+import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -43,6 +51,21 @@ class EventBroadcasterTest {
         return new PoolEvent.ResourceUnblocked(new ResourceId(ResourceKind.PROXY, id), AT);
     }
 
+    private static String valueOf(AdvisorProto.PoolEvent event) {
+        return event.getUnblocked().getResource().getValue();
+    }
+
+    private static void awaitQuietly(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
+    // ---------- example-based behavior specs ----------
+
     @Test
     void aReadySubscriberReceivesEventsInEmitOrder() {
         EventBroadcaster broadcaster = new EventBroadcaster();
@@ -53,10 +76,8 @@ class EventBroadcasterTest {
         broadcaster.emit(unblocked("b"));
 
         assertThat(subscriber.received).hasSize(2);
-        assertThat(subscriber.received.get(0).getUnblocked().getResource().getValue())
-                .isEqualTo("a");
-        assertThat(subscriber.received.get(1).getUnblocked().getResource().getValue())
-                .isEqualTo("b");
+        assertThat(valueOf(subscriber.received.get(0))).isEqualTo("a");
+        assertThat(valueOf(subscriber.received.get(1))).isEqualTo("b");
     }
 
     @Test
@@ -149,8 +170,7 @@ class EventBroadcasterTest {
         assertThatNoException().isThrownBy(() -> broadcaster.emit(unblocked("a")));
 
         assertThat(healthy.received).hasSize(1);
-        assertThat(healthy.received.get(0).getUnblocked().getResource().getValue())
-                .isEqualTo("a");
+        assertThat(valueOf(healthy.received.get(0))).isEqualTo("a");
 
         // The throwing subscriber was terminated: it receives no further events even once it stops throwing.
         throwing.throwOnNext = false;
@@ -171,13 +191,201 @@ class EventBroadcasterTest {
                 .isEqualTo(AdvisorProto.PoolEvent.ResourceBlocklisted.UntilCase.PERMANENT);
     }
 
+    // ---------- property-based invariants (jqwik) ----------
+    // These attack the sequential invariants — the ones that hold regardless of thread scheduling —
+    // over many generated shapes. True-concurrency invariants live in the stress tests below.
+
+    /** I4: a single ready subscriber sees events in emit order, at any length. */
+    @Property
+    void aReadySubscriberPreservesEmitOrderAtAnyLength(@ForAll @IntRange(min = 1, max = 60) int count) {
+        EventBroadcaster broadcaster = new EventBroadcaster();
+        FakeStreamObserver subscriber = new FakeStreamObserver(true);
+        broadcaster.subscribe(subscriber);
+
+        for (int i = 0; i < count; i++) {
+            broadcaster.emit(unblocked("e" + i));
+        }
+
+        assertThat(subscriber.received).hasSize(count);
+        for (int i = 0; i < count; i++) {
+            assertThat(valueOf(subscriber.received.get(i))).isEqualTo("e" + i);
+        }
+        assertThat(subscriber.concurrentOnNext).isFalse();
+    }
+
+    /** I5: an overflowing subscriber is isolated — it is cut, healthy peers keep receiving — at any capacity. */
+    @Property
+    void anOverflowingSubscriberIsIsolatedAtAnyCapacity(
+            @ForAll @IntRange(min = 1, max = 16) int capacity, @ForAll @IntRange(min = 1, max = 8) int overBy) {
+        EventBroadcaster broadcaster = new EventBroadcaster(capacity);
+        FakeStreamObserver stuck = new FakeStreamObserver(false);
+        FakeStreamObserver healthy = new FakeStreamObserver(true);
+        broadcaster.subscribe(stuck);
+        broadcaster.subscribe(healthy);
+
+        int total = capacity + overBy; // > capacity, so the stuck (never-draining) queue must overflow
+        for (int i = 0; i < total; i++) {
+            broadcaster.emit(unblocked("e" + i));
+        }
+
+        assertThat(stuck.error).isInstanceOf(StatusRuntimeException.class);
+        assertThat(((StatusRuntimeException) stuck.error).getStatus().getCode())
+                .isEqualTo(Status.Code.RESOURCE_EXHAUSTED);
+        assertThat(broadcaster.subscriberCount()).isEqualTo(1);
+        assertThat(healthy.received).hasSize(total);
+        assertThat(healthy.error).isNull();
+        assertThat(healthy.concurrentOnNext).isFalse();
+    }
+
+    /** I6: events buffered while not ready are all delivered, in order, once the subscriber becomes ready. */
+    @Property
+    void bufferedEventsAreAllDeliveredInOrderOnReady(@ForAll @IntRange(min = 1, max = 200) int count) {
+        EventBroadcaster broadcaster = new EventBroadcaster(); // capacity 256 > 200, so no overflow
+        FakeStreamObserver subscriber = new FakeStreamObserver(false);
+        broadcaster.subscribe(subscriber);
+
+        for (int i = 0; i < count; i++) {
+            broadcaster.emit(unblocked("e" + i));
+        }
+        assertThat(subscriber.received).isEmpty();
+
+        subscriber.becomeReady();
+
+        assertThat(subscriber.received).hasSize(count);
+        for (int i = 0; i < count; i++) {
+            assertThat(valueOf(subscriber.received.get(i))).isEqualTo("e" + i);
+        }
+    }
+
+    // ---------- multi-threaded concurrency invariants (real contention) ----------
+    // The reentrancy detector in FakeStreamObserver turns "onNext called concurrently" from a symptom
+    // we hope to observe into a fact caught the instant it happens: if the interleaving occurs in this
+    // run, `concurrentOnNext` is set and the assertion after the join fails.
+
+    /**
+     * I1 + I3: a producer (emit) and the transport (onReady) drain the SAME subscriber concurrently.
+     * {@code wip} must serialize delivery (no concurrent onNext), and the re-check loop must lose no
+     * wakeup — every event is eventually delivered, in order for a single producer.
+     */
+    @RepeatedTest(150)
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void concurrentEmitAndOnReadyNeverDeliverConcurrentlyAndLoseNoEvents() throws InterruptedException {
+        EventBroadcaster broadcaster = new EventBroadcaster(); // 256 > n, so a ready subscriber never overflows
+        FakeStreamObserver subscriber = new FakeStreamObserver(true);
+        broadcaster.subscribe(subscriber);
+
+        int n = 200;
+        CountDownLatch start = new CountDownLatch(1);
+        Thread producer = new Thread(() -> {
+            awaitQuietly(start);
+            for (int i = 0; i < n; i++) {
+                broadcaster.emit(unblocked("e" + i));
+            }
+        });
+        Thread waker = new Thread(() -> {
+            awaitQuietly(start);
+            for (int i = 0; i < n * 4; i++) {
+                subscriber.becomeReady(); // fires onReady -> drain, contending with the producer's drain
+            }
+        });
+        producer.start();
+        waker.start();
+        start.countDown();
+        producer.join();
+        waker.join();
+        subscriber.becomeReady(); // final drain flushes anything still buffered
+
+        assertThat(subscriber.concurrentOnNext)
+                .as("onNext must never run on two threads at once")
+                .isFalse();
+        assertThat(subscriber.received).as("no lost wakeup").hasSize(n);
+        for (int i = 0; i < n; i++) {
+            assertThat(valueOf(subscriber.received.get(i))).isEqualTo("e" + i); // FIFO for a single producer
+        }
+    }
+
+    /**
+     * I1: many producers emit to one ready subscriber at once. Delivery is still serialized (no
+     * concurrent onNext) and no event is lost. Order across producers is undefined and not asserted.
+     */
+    @RepeatedTest(150)
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void concurrentEmitsFromManyThreadsNeverDeliverConcurrentlyAndLoseNoEvents() throws InterruptedException {
+        int threads = 4;
+        int perThread = 100;
+        // Capacity large enough that a ready subscriber never overflows even in the worst interleaving.
+        EventBroadcaster broadcaster = new EventBroadcaster(threads * perThread + 1);
+        FakeStreamObserver subscriber = new FakeStreamObserver(true);
+        broadcaster.subscribe(subscriber);
+
+        CountDownLatch start = new CountDownLatch(1);
+        ExecutorService pool = Executors.newFixedThreadPool(threads);
+        for (int t = 0; t < threads; t++) {
+            int base = t;
+            pool.submit(() -> {
+                awaitQuietly(start);
+                for (int i = 0; i < perThread; i++) {
+                    broadcaster.emit(unblocked("t" + base + "-" + i));
+                }
+            });
+        }
+        start.countDown();
+        pool.shutdown();
+        assertThat(pool.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        subscriber.becomeReady(); // flush any tail left buffered
+
+        assertThat(subscriber.concurrentOnNext)
+                .as("onNext must never run on two threads at once")
+                .isFalse();
+        assertThat(subscriber.received).as("no event lost").hasSize(threads * perThread);
+        assertThat(subscriber.error).isNull();
+    }
+
+    /**
+     * I7: subscribe() racing close() must never orphan a stream. Whichever order the synchronized
+     * methods interleave, the late subscriber ends completed (never left open) and the pool empties.
+     */
+    @RepeatedTest(200)
+    @Timeout(value = 10, unit = TimeUnit.SECONDS)
+    void aSubscriberRacingCloseIsAlwaysCompletedNeverOrphaned() throws InterruptedException {
+        EventBroadcaster broadcaster = new EventBroadcaster();
+        FakeStreamObserver late = new FakeStreamObserver(true);
+
+        CountDownLatch start = new CountDownLatch(1);
+        Thread closer = new Thread(() -> {
+            awaitQuietly(start);
+            broadcaster.close();
+        });
+        Thread subscriber = new Thread(() -> {
+            awaitQuietly(start);
+            broadcaster.subscribe(late);
+        });
+        closer.start();
+        subscriber.start();
+        start.countDown();
+        closer.join();
+        subscriber.join();
+
+        assertThat(late.completed)
+                .as("a subscriber racing close is completed, not orphaned")
+                .isTrue();
+        assertThat(broadcaster.subscriberCount()).isZero();
+    }
+
     /**
      * A stand-in for gRPC's stream observer with hand-cranked flow control: {@code isReady} is a
      * switch, {@link #becomeReady()} plays the role of the transport firing the onReady handler.
+     *
+     * <p>It also carries a reentrancy detector: {@code onNext} claims {@code inCall} with a CAS and, if
+     * a second thread is already inside, records {@code concurrentOnNext} and throws. This makes a
+     * violation of the "delivery is serialized" invariant deterministically observable in a stress run
+     * rather than something we hope shows up as a corrupted list.
      */
     private static final class FakeStreamObserver extends ServerCallStreamObserver<AdvisorProto.PoolEvent> {
 
-        private final List<AdvisorProto.PoolEvent> received = new ArrayList<>();
+        private final List<AdvisorProto.PoolEvent> received = new CopyOnWriteArrayList<>();
+        private final AtomicBoolean inCall = new AtomicBoolean();
+        private volatile boolean concurrentOnNext;
         private volatile boolean ready;
         private volatile boolean cancelled;
         private volatile boolean completed;
@@ -202,10 +410,19 @@ class EventBroadcasterTest {
 
         @Override
         public void onNext(AdvisorProto.PoolEvent value) {
-            if (throwOnNext) {
-                throw new IllegalStateException("call already closed");
+            if (!inCall.compareAndSet(false, true)) {
+                concurrentOnNext = true;
+                throw new AssertionError("onNext called concurrently by two threads");
             }
-            received.add(value);
+            try {
+                Thread.onSpinWait(); // widen the delivery window so a real race is likelier to surface
+                if (throwOnNext) {
+                    throw new IllegalStateException("call already closed");
+                }
+                received.add(value);
+            } finally {
+                inCall.set(false);
+            }
         }
 
         @Override
