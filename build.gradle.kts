@@ -7,5 +7,5 @@ plugins {
 
 allprojects {
     group = "io.github.preagile"
-    version = (findProperty("releaseVersion") as String?) ?: "0.1.0-SNAPSHOT"
+    version = findProperty("releaseVersion")?.toString() ?: "0.1.0-SNAPSHOT"
 }
