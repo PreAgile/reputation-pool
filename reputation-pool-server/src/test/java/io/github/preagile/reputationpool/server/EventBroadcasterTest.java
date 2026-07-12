@@ -16,6 +16,7 @@
 package io.github.preagile.reputationpool.server;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatNoException;
 
 import io.github.preagile.reputationpool.core.domain.Context;
 import io.github.preagile.reputationpool.core.domain.PoolEvent;
@@ -136,6 +137,29 @@ class EventBroadcasterTest {
     }
 
     @Test
+    void anObserverThatThrowsOnDeliveryIsDroppedAndOthersSurvive() {
+        EventBroadcaster broadcaster = new EventBroadcaster();
+        FakeStreamObserver throwing = new FakeStreamObserver(true);
+        FakeStreamObserver healthy = new FakeStreamObserver(true);
+        throwing.throwOnNext = true; // e.g. gRPC "call already closed" when the client cancelled mid-drain
+        broadcaster.subscribe(throwing);
+        broadcaster.subscribe(healthy);
+
+        // The throwing subscriber's onNext must not escape drain() -> emit() into the pool operation.
+        assertThatNoException().isThrownBy(() -> broadcaster.emit(unblocked("a")));
+
+        assertThat(healthy.received).hasSize(1);
+        assertThat(healthy.received.get(0).getUnblocked().getResource().getValue())
+                .isEqualTo("a");
+
+        // The throwing subscriber was terminated: it receives no further events even once it stops throwing.
+        throwing.throwOnNext = false;
+        assertThatNoException().isThrownBy(() -> broadcaster.emit(unblocked("b")));
+        assertThat(throwing.received).isEmpty();
+        assertThat(healthy.received).hasSize(2);
+    }
+
+    @Test
     void eventsAreMappedThroughTheWireContract() {
         EventBroadcaster broadcaster = new EventBroadcaster();
         FakeStreamObserver subscriber = new FakeStreamObserver(true);
@@ -158,6 +182,7 @@ class EventBroadcasterTest {
         private volatile boolean cancelled;
         private volatile boolean completed;
         private volatile Throwable error;
+        private volatile boolean throwOnNext;
         private Runnable onReady = () -> {};
         private Runnable onCancel = () -> {};
 
@@ -177,6 +202,9 @@ class EventBroadcasterTest {
 
         @Override
         public void onNext(AdvisorProto.PoolEvent value) {
+            if (throwOnNext) {
+                throw new IllegalStateException("call already closed");
+            }
             received.add(value);
         }
 

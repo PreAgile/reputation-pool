@@ -49,6 +49,9 @@ final class EventBroadcaster implements EventSink {
 
     private final List<Subscriber> subscribers = new CopyOnWriteArrayList<>();
     private final int queueCapacity;
+    // Guarded by this monitor (subscribe/close are synchronized). emit() stays lock-free and
+    // never reads this: after close() the subscriber list is empty, so a late emit is a no-op.
+    private boolean closed;
 
     EventBroadcaster() {
         this(DEFAULT_QUEUE_CAPACITY);
@@ -62,8 +65,14 @@ final class EventBroadcaster implements EventSink {
     }
 
     /** Registers a stream; the observer stays open until the client cancels or the server closes. */
-    void subscribe(ServerCallStreamObserver<AdvisorProto.PoolEvent> observer) {
+    synchronized void subscribe(ServerCallStreamObserver<AdvisorProto.PoolEvent> observer) {
         Subscriber subscriber = new Subscriber(observer, queueCapacity);
+        if (closed) {
+            // Subscribed during/after shutdown: complete immediately so the stream ends cleanly
+            // instead of being left open and reset. Mutual exclusion with close() closes the race.
+            subscriber.complete();
+            return;
+        }
         observer.setOnReadyHandler(subscriber::drain);
         observer.setOnCancelHandler(() -> subscribers.remove(subscriber));
         subscribers.add(subscriber);
@@ -88,7 +97,8 @@ final class EventBroadcaster implements EventSink {
     }
 
     /** Completes every open stream; used on server shutdown so clients see an orderly end. */
-    void close() {
+    synchronized void close() {
+        closed = true;
         for (Subscriber subscriber : subscribers) {
             subscribers.remove(subscriber);
             subscriber.complete();
@@ -141,7 +151,15 @@ final class EventBroadcaster implements EventSink {
                     }
                     AdvisorProto.PoolEvent next;
                     while (observer.isReady() && (next = queue.poll()) != null) {
-                        observer.onNext(next);
+                        try {
+                            observer.onNext(next);
+                        } catch (RuntimeException e) {
+                            // Client cancelled or transport closed mid-drain; terminate this
+                            // subscriber silently so the exception never escapes drain() -> emit()
+                            // into an otherwise-successful pool operation.
+                            terminated = true;
+                            return;
+                        }
                     }
                     if (completeRequested && queue.isEmpty()) {
                         sendTerminal(observer::onCompleted);
