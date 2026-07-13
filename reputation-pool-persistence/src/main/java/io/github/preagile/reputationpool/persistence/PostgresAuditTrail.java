@@ -54,9 +54,11 @@ import javax.sql.DataSource;
  * replay an incident in full, which is why the counter is exposed.
  *
  * <p>{@link #close()} stops accepting events, flushes what is already queued, and joins the writer —
- * so an orderly shutdown loses nothing that was accepted. The event&#8594;row translation lives in
- * {@link AuditEventMapper} as pure functions; this class owns only the queue, the writer thread, and
- * the SQL.
+ * so an orderly shutdown against a responsive database loses nothing that was accepted. When the
+ * writer cannot finish within the close timeout (a wedged database call), the remaining tail is
+ * abandoned but <em>counted</em>: it lands in {@link #droppedCount()} like any other loss, never
+ * silently. The event&#8594;row translation lives in {@link AuditEventMapper} as pure functions; this
+ * class owns only the queue, the writer thread, and the SQL.
  */
 public final class PostgresAuditTrail implements EventSink, AutoCloseable {
 
@@ -66,7 +68,7 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
     private static final int MAX_BATCH_SIZE = 128;
 
     private static final Duration IDLE_POLL = Duration.ofMillis(100);
-    private static final Duration CLOSE_TIMEOUT = Duration.ofSeconds(5);
+    private static final Duration DEFAULT_CLOSE_TIMEOUT = Duration.ofSeconds(5);
     private static final Logger LOG = System.getLogger(PostgresAuditTrail.class.getName());
 
     private static final String INSERT_EVENT =
@@ -83,7 +85,15 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
     private final BlockingQueue<PoolEvent> queue;
     private final AtomicLong dropped = new AtomicLong();
     private final Thread writer;
+    private final Duration closeTimeout;
     private volatile boolean running = true;
+
+    // Makes the running-check-and-offer in emit() atomic with close() flipping the flag. Without it,
+    // an emit racing a close could offer into a queue whose writer has already drained and exited —
+    // an event neither written nor counted, breaking droppedCount()'s "zero means no gaps" contract.
+    // Emitters already serialize on the queue's internal lock, so this adds no new contention shape,
+    // and close() holds it only for the flag flip.
+    private final Object emitLock = new Object();
 
     /**
      * Creates a trail appending to {@code dataSource} with the default queue capacity.
@@ -106,10 +116,15 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
     }
 
     PostgresAuditTrail(BatchWriter batchWriter, int queueCapacity) {
+        this(batchWriter, queueCapacity, DEFAULT_CLOSE_TIMEOUT);
+    }
+
+    PostgresAuditTrail(BatchWriter batchWriter, int queueCapacity, Duration closeTimeout) {
         Objects.requireNonNull(batchWriter, "batchWriter must not be null");
         if (queueCapacity <= 0) {
             throw new IllegalArgumentException("queueCapacity must be positive");
         }
+        this.closeTimeout = Objects.requireNonNull(closeTimeout, "closeTimeout must not be null");
         this.queue = new ArrayBlockingQueue<>(queueCapacity);
         this.writer = Thread.ofPlatform()
                 .name("reputation-pool-audit-writer")
@@ -121,8 +136,10 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
     @Override
     public void emit(PoolEvent event) {
         Objects.requireNonNull(event, "event must not be null");
-        if (!running || !queue.offer(event)) {
-            dropped.incrementAndGet();
+        synchronized (emitLock) {
+            if (!running || !queue.offer(event)) {
+                dropped.incrementAndGet();
+            }
         }
     }
 
@@ -135,13 +152,25 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
         return dropped.get();
     }
 
-    /** Stops accepting events, flushes everything already queued, and joins the writer thread. */
+    /**
+     * Stops accepting events, flushes everything already queued, and joins the writer thread. If the
+     * writer cannot finish within the close timeout — a wedged database call, say — it is interrupted
+     * and the still-queued tail is <em>abandoned loudly</em>: drained into {@link #droppedCount()} so
+     * the gap in the trail is visible rather than silent. The batch already in the writer's hands is
+     * accounted the same way by the writer's own failure path if its wedged call ever returns.
+     */
     @Override
     public void close() {
-        running = false;
+        synchronized (emitLock) {
+            running = false;
+        }
         try {
-            if (!writer.join(CLOSE_TIMEOUT)) {
+            if (!writer.join(closeTimeout)) {
                 writer.interrupt();
+                writer.join(closeTimeout);
+                List<PoolEvent> abandoned = new ArrayList<>();
+                queue.drainTo(abandoned);
+                dropped.addAndGet(abandoned.size());
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -179,26 +208,43 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
 
     private static BatchWriter jdbcWriter(DataSource dataSource) {
         return batch -> {
-            try (Connection connection = dataSource.getConnection();
-                    PreparedStatement statement = connection.prepareStatement(INSERT_EVENT)) {
+            try (Connection connection = dataSource.getConnection()) {
+                boolean previousAutoCommit = connection.getAutoCommit();
                 connection.setAutoCommit(false);
-                for (PoolEvent event : batch) {
-                    AuditEventMapper.AuditRow row = AuditEventMapper.toRow(event);
-                    statement.setString(1, row.eventType());
-                    statement.setString(2, row.resourceKind());
-                    statement.setString(3, row.resourceValue());
-                    statement.setString(4, row.context());
-                    statement.setLong(5, row.occurredAtNanos());
-                    if (row.untilNanos() == null) {
-                        statement.setNull(6, Types.BIGINT);
-                    } else {
-                        statement.setLong(6, row.untilNanos());
+                try (PreparedStatement statement = connection.prepareStatement(INSERT_EVENT)) {
+                    for (PoolEvent event : batch) {
+                        AuditEventMapper.AuditRow row = AuditEventMapper.toRow(event);
+                        statement.setString(1, row.eventType());
+                        statement.setString(2, row.resourceKind());
+                        statement.setString(3, row.resourceValue());
+                        statement.setString(4, row.context());
+                        statement.setLong(5, row.occurredAtNanos());
+                        if (row.untilNanos() == null) {
+                            statement.setNull(6, Types.BIGINT);
+                        } else {
+                            statement.setLong(6, row.untilNanos());
+                        }
+                        statement.setString(7, row.cause());
+                        statement.addBatch();
                     }
-                    statement.setString(7, row.cause());
-                    statement.addBatch();
+                    statement.executeBatch();
+                    connection.commit();
+                } catch (SQLException | RuntimeException e) {
+                    try {
+                        connection.rollback();
+                    } catch (SQLException rollbackEx) {
+                        // Keep the original failure as the primary exception; a failed rollback is
+                        // secondary context, not a replacement for what actually went wrong.
+                        e.addSuppressed(rollbackEx);
+                    }
+                    throw e;
+                } finally {
+                    try {
+                        connection.setAutoCommit(previousAutoCommit);
+                    } catch (SQLException ignored) {
+                        // Avoid masking the primary exception; the connection is closing anyway.
+                    }
                 }
-                statement.executeBatch();
-                connection.commit();
             } catch (SQLException e) {
                 throw new PersistenceException("failed to append audit events", e);
             }

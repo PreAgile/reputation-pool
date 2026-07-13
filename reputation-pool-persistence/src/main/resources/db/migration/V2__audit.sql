@@ -12,7 +12,7 @@
 --
 -- The table grows without bound by design; retention/pruning is deliberately deferred.
 CREATE TABLE audit_event (
-    seq            bigserial PRIMARY KEY,
+    seq            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     event_type     text NOT NULL,
     resource_kind  text NOT NULL,
     resource_value text NOT NULL,
