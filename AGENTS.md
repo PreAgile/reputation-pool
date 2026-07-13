@@ -58,6 +58,22 @@ Enforced by the build and by review, not by convention:
   `build:`, `ci:`, `docs:`, `refactor:`, `test:`, `chore:`, optionally scoped (e.g.
   `feat(core): ...`).
 
+## Issue and PR metadata
+
+- **Non-trivial work starts from an issue, and the PR closes it.** File the issue first —
+  English, a conventional-commit-style title (same prefixes as commits), and `type:` /
+  `area:` labels — then put `Closes #N` in the PR body so the merge closes it and links
+  the pair. Trivial fixes (a typo, a one-line chore) may skip the issue.
+- **Milestones group a batch of related issues** — a themed effort (e.g.
+  `Test-suite hardening`) or a version ahead of a release (e.g. `core 0.2.0`). Assign
+  every issue in the batch to the milestone; the milestone — not a tracking/umbrella
+  issue — is where batch progress lives, so do not create both for the same set.
+- **Signal work in progress**: self-assign the issue and add `status: in-progress` when
+  starting, remove or close when done — this is what tells others (and other agents) not
+  to duplicate the work.
+- **No GitHub Projects boards.** The README roadmap plus milestones are the planning
+  source of truth at this scale; revisit only if the contributor base grows.
+
 ## Layout
 
 ```
