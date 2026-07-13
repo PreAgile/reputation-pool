@@ -13,8 +13,8 @@ database, no network. Time, storage, health-probing, and observability are pushe
 [![Java](https://img.shields.io/badge/Java-25%2B-orange.svg)](https://openjdk.org/projects/jdk/25/)
 
 > **Status — early development.** `reputation-pool-core` (the pure decision engine) is published to Maven
-> Central at `0.1.0`. The L1 adapters and the L2 gRPC advisor are done; L3 persistence is next. Layers are
-> added as separate modules in this same repository — see the [roadmap](#roadmap) and
+> Central at `0.1.0`. The L1 adapters, the L2 gRPC advisor, and L3 persistence (snapshot + audit trail) are
+> done. Layers are added as separate modules in this same repository — see the [roadmap](#roadmap) and
 > [Design notes](#design-notes) for the full target architecture.
 
 ## Why
@@ -86,7 +86,8 @@ resource everywhere.
 |---|---|---|
 | `reputation-pool-core` | Pure decision engine — domain, engine, ports. JDK only. | Done |
 | `reputation-pool-adapters` | Demo resource kinds (proxy, account) implementing the ports. | Done |
-| `reputation-pool-server` | Spring adapter ring — gRPC advisor done (L2); persistence, virtual-thread probing, and observability next (L3). | In progress |
+| `reputation-pool-persistence` | PostgreSQL adapter — snapshot store + append-only audit trail (plain JDBC + Flyway). | Done |
+| `reputation-pool-server` | gRPC advisor (L2) + durable lifecycle wiring (L3); virtual-thread probing and observability later. | In progress |
 
 ## Architecture
 
@@ -97,7 +98,8 @@ boundary is guarded by CI, not by convention.
 ```mermaid
 flowchart TB
     adapters["reputation-pool-adapters — L1 (done)<br/>proxy and account demos"]
-    server["reputation-pool-server — L2 (done) · L3 (planned)<br/>gRPC advisor done · persistence next"]
+    persistence["reputation-pool-persistence — L3 (done)<br/>snapshot store + audit trail"]
+    server["reputation-pool-server — L2 · L3 (done)<br/>gRPC advisor · durable lifecycle"]
 
     subgraph core["reputation-pool-core — pure Java, JDK only"]
         M1["M1 (done) · decision engine<br/>pure (state, outcome, now) → new state"]
@@ -105,6 +107,7 @@ flowchart TB
     end
 
     adapters -->|depends on| core
+    persistence -->|depends on| core
     server -->|depends on| core
 ```
 
@@ -141,7 +144,9 @@ ArchUnit purity rules. The build provisions JDK 25 automatically via the Foojay 
 - [x] **L1 — adapter demos**: proxy and account adapters driven by the same engine — per-kind outcome
       classifiers and WireMock end-to-end cooling/recovery tests.
 - [x] **L2 — gRPC advisor**: `acquire / report / renew / release` + event stream; publish core to Maven Central.
-- [ ] **L3 — persistence**: snapshot + audit trail behind the `ResourceStore` port.
+- [x] **L3 — persistence**: whole-pool snapshot behind the `ResourceStore` port, plus an append-only
+      audit trail as a second `EventSink` implementation — the two persistence shapes deliberately sit
+      behind different ports (replace-latest vs. append-history).
 
 ## Design notes
 
