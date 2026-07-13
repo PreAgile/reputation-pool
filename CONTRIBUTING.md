@@ -53,7 +53,16 @@ add comments that restate the code, and do not add uniform Javadoc to every meth
 Use [Conventional Commits](https://www.conventionalcommits.org/): `feat:`, `fix:`, `build:`, `ci:`,
 `docs:`, `refactor:`, `test:`, `chore:`, optionally scoped (e.g. `feat(core): ...`).
 
+## Issues and planning
+
+Non-trivial changes start from an issue: written in English, titled in the conventional-commit style
+(same prefixes as commits), and labelled with `type:` and `area:`. Related issues are grouped by a
+**milestone** — a themed batch (e.g. `Test-suite hardening`) or a version ahead of a release (e.g.
+`core 0.2.0`) — and the milestone is where batch progress lives. The project does not use GitHub
+Projects boards; the README roadmap and milestones are the planning surface.
+
 ## Pull requests
 
-Open PRs against `main`. Fill in the PR template checklist. CI and CodeRabbit run automatically;
-address review comments before merge.
+Open PRs against `main`. Reference the issue the PR resolves with `Closes #N` in the body so the
+merge closes it. Fill in the PR template checklist. CI and CodeRabbit run automatically; address
+review comments before merge.
