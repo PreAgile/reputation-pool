@@ -36,15 +36,12 @@ import org.junit.jupiter.api.Test;
  * be bypassed by an in-flight {@code acquire}</em> — under Lincheck's controlled interleavings, while
  * tolerating the spurious denial that makes this race inexpressible as a linearizability spec.
  *
- * <p><b>Why not a declarative {@code @Operation} spec — found, not assumed.</b> Two drafts tried, and
- * Lincheck rejected both with instructive traces. Multi-resource: an acquire's transient claim on the
- * smallest id made a concurrent acquire skip it before the claim was undone, so <em>which</em>
- * resource acquire grants is schedule-dependent policy, not contract. Single-resource: thread B's
- * acquire claimed the resource and was switched out; thread A's acquire observed the claim and
- * failed; A then blocked the resource; B resumed, saw the block, and undid — both acquires returned
- * empty on a free resource, a history no sequential order explains. That is the optimistic claim
- * working as documented ("retrying the next candidate if it loses the claim race"): a claim can be
- * observed and then rolled back, so a racing acquire may fail spuriously — the same reason
+ * <p><b>Why not a declarative {@code @Operation} spec.</b> This race is not linearizable, in two
+ * ways, both by design of the optimistic retry loop. First, <em>which</em> resource acquire grants is
+ * schedule-dependent policy, not contract: a transient claim can be observed by a concurrent acquire
+ * and then undone. Second, acquire may fail spuriously: an acquire that observes a transient claim
+ * returns empty even though the claim is later rolled back, leaving a history ("two acquires both
+ * empty on a free resource") that no sequential order explains — the same reason
  * {@code tryLock}-style APIs write spurious failure into their contracts. Serializing acquire against
  * block under one lock would remove the spuriousness and contradict the layer's whole design.
  *
@@ -52,21 +49,18 @@ import org.junit.jupiter.api.Test;
  * <em>later-started</em> acquire must not grant. This test encodes exactly that with
  * {@link Lincheck#runConcurrentTest}: the blocker raises a flag only <em>after</em> {@code block()}
  * returns, the acquirer reads the flag <em>before</em> calling {@code acquire}, and a grant with the
- * flag already seen is a bypass. Remove the blocklist gating from {@code acquire} and this fails
- * within seconds (verified during development — with the assertion after {@code join} on the test
- * thread, because an {@code AssertionError} inside a spawned thread dies as an uncaught exception and
- * fails nothing).
+ * flag already seen is a bypass. Removing the blocklist gating from {@code acquire} makes this fail
+ * within seconds.
  *
- * <p><b>The undo itself is beyond any black-box checker — worth knowing, not fixing.</b> Removing
- * only the post-claim re-check leaves every observable history linearizable: a grant whose claim
- * landed after a concurrent {@code block()} returned is indistinguishable from an acquire that
- * linearized just before the block. What the undo actually buys is operational and real-world — once
- * {@code block()} returns, no in-flight acquire can still convert into <em>usage</em> of the burned
- * resource — a real-time strengthening that lives in the claim's timing, which no history of results
- * can witness. Its regression guard is therefore the sequential undo test in {@code src/test}, not a
- * concurrency oracle. Lease-lifecycle linearizability is proven separately by
- * {@link ResourcePoolLincheckTest}, which keeps the blocklist quiet — for the token reasons
- * documented there.
+ * <p><b>The undo re-check itself is beyond any black-box checker.</b> Removing only the post-claim
+ * re-check leaves every observable history linearizable: a grant whose claim landed after a
+ * concurrent {@code block()} returned is indistinguishable from an acquire that linearized just
+ * before the block. What the undo buys is operational — once {@code block()} returns, no in-flight
+ * acquire can still convert into <em>usage</em> of the burned resource — a real-time strengthening
+ * living in the claim's timing, which no history of results can witness. Its regression guard is
+ * therefore the sequential undo test in {@code ResourcePoolTest}, not a concurrency oracle.
+ * Lease-lifecycle linearizability is proven separately by {@link ResourcePoolLincheckTest}, which
+ * keeps the blocklist quiet — for the token reasons documented there.
  */
 public class ResourcePoolBlockBypassLincheckTest {
 

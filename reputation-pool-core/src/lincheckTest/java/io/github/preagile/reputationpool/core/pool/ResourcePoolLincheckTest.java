@@ -55,8 +55,8 @@ import org.junit.jupiter.api.Test;
  * {@code acquire} re-checks the blocklist after claiming and undoes the claim if a concurrent
  * {@code block} won, which burns a token a sequential replay never draws, skewing every later match.
  * So this class keeps the blocklist quiet and checks lease semantics exhaustively;
- * {@link ResourcePoolBlocklistLincheckTest} takes the complement — acquire racing block/unblock,
- * including that undo path — with token-free operations.
+ * {@link ResourcePoolBlockBypassLincheckTest} takes the complement — acquire racing block, including
+ * that undo path — with token-free operations.
  */
 @Param(name = "token", gen = IntGen.class, conf = "1:4")
 public class ResourcePoolLincheckTest {

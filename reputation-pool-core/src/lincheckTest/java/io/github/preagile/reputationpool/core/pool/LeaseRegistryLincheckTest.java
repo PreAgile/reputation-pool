@@ -33,19 +33,18 @@ import org.junit.jupiter.api.Test;
  * trace. This is the proof the hand-rolled 32-thread stress tests in {@code src/test} can only
  * gesture at.
  *
- * <p><b>Why one resource — found, not assumed.</b> The first draft ran these operations over three
- * resources, and Lincheck's very first runs rejected it with instructive traces: inside
- * {@code ConcurrentHashMap.compute}, a claim draws its fencing token from the global counter and can
- * be switched out <em>before {@code setTabAt} publishes the mapping</em>; a claim on a <em>different</em>
- * resource then draws the next token and becomes visible first. Token order said A-then-B, visibility
- * said B-then-A — no linearization exists once token values (or forged-token match results) reach the
- * observable history. That is not a registry bug: fencing promises <em>per-resource</em> monotonicity,
- * published atomically with the mapping by the same bin-locked {@code compute}, and a caller can only
- * present a token it received from its own acquire — cross-resource allocation order is unobservable
- * under the real dataflow. On a single resource that artifact disappears (same-key computes serialize
- * on the bin lock), so token matching is fully sound here and the whole fencing semantics gets
- * checked: exactly one live holder, a stale token can neither release nor extend, the current token
- * can. Cross-resource independence is covered token-free by {@link LeaseRegistryIndependenceLincheckTest}.
+ * <p><b>Why one resource.</b> Inside {@code ConcurrentHashMap.compute}, a claim draws its fencing
+ * token from the global counter and can be switched out <em>before {@code setTabAt} publishes the
+ * mapping</em>; a claim on a <em>different</em> resource then draws the next token and becomes
+ * visible first. Token order says A-then-B, visibility says B-then-A — no linearization exists once
+ * token values (or forged-token match results) reach the observable history. That is not a registry
+ * bug: fencing promises <em>per-resource</em> monotonicity, published atomically with the mapping by
+ * the same bin-locked {@code compute}, and a caller can only present a token it received from its own
+ * acquire — cross-resource allocation order is unobservable under the real dataflow. On a single
+ * resource that artifact disappears (same-key computes serialize on the bin lock), so token matching
+ * is fully sound here and the whole fencing semantics gets checked: exactly one live holder, a stale
+ * token can neither release nor extend, the current token can. Cross-resource independence is covered
+ * token-free by {@link LeaseRegistryIndependenceLincheckTest}.
  *
  * <p>Determinism, the precondition for comparing against a sequential replay, is otherwise free: the
  * registry takes {@code now} as an argument (design rule: time is injected), so a constant {@code NOW}
