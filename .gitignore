@@ -21,3 +21,6 @@ bin/
 
 # jqwik records failing samples here between runs — a local artifact, not source
 .jqwik-database
+
+# Local AI-review scratch notes, never part of the source tree.
+.codex-*

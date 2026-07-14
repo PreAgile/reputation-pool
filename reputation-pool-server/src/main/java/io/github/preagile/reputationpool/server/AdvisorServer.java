@@ -19,7 +19,9 @@ import io.github.preagile.reputationpool.core.engine.AdaptiveCooldownPolicy;
 import io.github.preagile.reputationpool.core.engine.ReputationEngine;
 import io.github.preagile.reputationpool.core.pool.ResourcePool;
 import io.github.preagile.reputationpool.core.pool.WeightedRandomSelectionStrategy;
+import io.github.preagile.reputationpool.core.port.EventSink;
 import io.github.preagile.reputationpool.core.port.ResourceStore;
+import io.github.preagile.reputationpool.persistence.PostgresAuditTrail;
 import io.github.preagile.reputationpool.persistence.PostgresResourceStore;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
@@ -28,6 +30,7 @@ import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executors;
@@ -96,7 +99,7 @@ public final class AdvisorServer {
 
     /** Test-friendly assembly with no store: every source of nondeterminism is handed in by the caller. */
     public static AdvisorServer create(int port, Clock clock, RandomGenerator random, Duration leaseTtl) {
-        return assemble(port, clock, random, leaseTtl, Optional.empty());
+        return assemble(port, clock, random, leaseTtl, Optional.empty(), Optional.empty());
     }
 
     /**
@@ -108,20 +111,51 @@ public final class AdvisorServer {
     public static AdvisorServer create(
             int port, Clock clock, RandomGenerator random, Duration leaseTtl, ResourceStore store) {
         Objects.requireNonNull(store, "store must not be null");
-        return assemble(port, clock, random, leaseTtl, Optional.of(store));
+        return assemble(port, clock, random, leaseTtl, Optional.of(store), Optional.empty());
     }
 
-    /** The single assembler both overload families route through. */
+    /**
+     * Fully durable assembly: snapshot store plus an audit sink. Pool events then fan out through a
+     * {@link CompositeEventSink} to both the live gRPC stream and {@code auditSink} — typically a
+     * {@link PostgresAuditTrail} appending the trail. The caller owns the audit sink's lifecycle
+     * (create it before, close it after {@link #shutdown} so the tail of the trail is flushed).
+     *
+     * @param store the durable store to restore from and checkpoint to; never null
+     * @param auditSink the second consumer of every pool event; never null
+     */
+    public static AdvisorServer create(
+            int port,
+            Clock clock,
+            RandomGenerator random,
+            Duration leaseTtl,
+            ResourceStore store,
+            EventSink auditSink) {
+        Objects.requireNonNull(store, "store must not be null");
+        Objects.requireNonNull(auditSink, "auditSink must not be null");
+        return assemble(port, clock, random, leaseTtl, Optional.of(store), Optional.of(auditSink));
+    }
+
+    /** The single assembler every overload family routes through. */
     private static AdvisorServer assemble(
-            int port, Clock clock, RandomGenerator random, Duration leaseTtl, Optional<ResourceStore> store) {
+            int port,
+            Clock clock,
+            RandomGenerator random,
+            Duration leaseTtl,
+            Optional<ResourceStore> store,
+            Optional<EventSink> auditSink) {
         Objects.requireNonNull(clock, "clock must not be null");
         Objects.requireNonNull(random, "random must not be null");
         Objects.requireNonNull(leaseTtl, "leaseTtl must not be null");
         EventBroadcaster broadcaster = new EventBroadcaster();
+        // With an audit sink the stream and the trail sit as siblings under one fan-out; the pool
+        // itself still holds exactly one sink, so the core stays untouched.
+        EventSink poolSink = auditSink
+                .<EventSink>map(audit -> new CompositeEventSink(List.of(broadcaster, audit)))
+                .orElse(broadcaster);
         ResourcePool pool = new ResourcePool(
                 new ReputationEngine(new AdaptiveCooldownPolicy(), WINDOW_SIZE, COOL_AFTER, RECOVER_AFTER),
                 new WeightedRandomSelectionStrategy(),
-                broadcaster,
+                poolSink,
                 clock,
                 random,
                 leaseTtl);
@@ -225,6 +259,7 @@ public final class AdvisorServer {
         int port = args.length > 0 ? Integer.parseInt(args[0]) : 9090;
         String url = System.getenv(ENV_DB_URL);
         AdvisorServer advisor;
+        PostgresAuditTrail auditTrail;
         if (url != null && !url.isBlank()) {
             LOG.log(Level.INFO, "starting in persistent mode (store backed by {0})", url);
             PGSimpleDataSource dataSource = new PGSimpleDataSource();
@@ -233,14 +268,17 @@ public final class AdvisorServer {
             dataSource.setPassword(System.getenv(ENV_DB_PASSWORD));
             // Flyway brings the schema up to date before the store touches any table.
             Flyway.configure().dataSource(dataSource).load().migrate();
+            auditTrail = new PostgresAuditTrail(dataSource);
             advisor = AdvisorServer.create(
                     port,
                     Clock.systemUTC(),
                     RandomGenerator.getDefault(),
                     DEFAULT_LEASE_TTL,
-                    new PostgresResourceStore(dataSource));
+                    new PostgresResourceStore(dataSource),
+                    auditTrail);
         } else {
             LOG.log(Level.INFO, "starting in in-memory mode (no {0} set; state will not survive restart)", ENV_DB_URL);
+            auditTrail = null;
             advisor = AdvisorServer.create(port);
         }
         advisor.start();
@@ -249,6 +287,12 @@ public final class AdvisorServer {
                 advisor.shutdown(Duration.ofSeconds(10));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
+            } finally {
+                // Closed after the server has drained, so the trail's tail — including events emitted
+                // by the very last RPCs — is flushed before the process exits.
+                if (auditTrail != null) {
+                    auditTrail.close();
+                }
             }
         }));
         advisor.awaitTermination();

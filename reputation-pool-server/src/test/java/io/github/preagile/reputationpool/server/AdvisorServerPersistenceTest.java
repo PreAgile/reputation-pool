@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 
 import io.github.preagile.reputationpool.core.domain.Context;
+import io.github.preagile.reputationpool.core.domain.PoolEvent;
 import io.github.preagile.reputationpool.core.domain.PoolSnapshot;
 import io.github.preagile.reputationpool.core.domain.ResourceId;
 import io.github.preagile.reputationpool.core.domain.ResourceKind;
@@ -32,6 +33,8 @@ import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 import java.util.Random;
 import org.junit.jupiter.api.Test;
@@ -112,6 +115,25 @@ class AdvisorServerPersistenceTest {
         assertThat(snapshot.cells()).isEmpty();
         assertThat(snapshot.registered()).isEmpty();
         assertThat(snapshot.blocklist().entries()).isEmpty();
+    }
+
+    @Test
+    void auditSink_receivesEveryPoolEventAlongsideTheStream() {
+        FakeResourceStore fakeStore = new FakeResourceStore();
+        List<PoolEvent> audited = new ArrayList<>();
+        AdvisorServer server = AdvisorServer.create(0, CLOCK, new Random(42), TTL, fakeStore, audited::add);
+
+        server.pool().register(PROXY);
+        server.pool().block(PROXY, Duration.ofMinutes(5));
+        server.pool().unblock(PROXY);
+
+        assertThat(audited)
+                .as("the composite sink fans pool events out to the audit sink, with core unchanged")
+                .hasSize(2)
+                .satisfies(events -> {
+                    assertThat(events.get(0)).isInstanceOf(PoolEvent.ResourceBlocklisted.class);
+                    assertThat(events.get(1)).isInstanceOf(PoolEvent.ResourceUnblocked.class);
+                });
     }
 
     @Test

@@ -41,6 +41,8 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("org.assertj:assertj-core:3.27.7")
+    // Property tests for the audit mapper's row<->event bijection (same version as core/server).
+    testImplementation("net.jqwik:jqwik:1.10.1")
     // Shared test helpers from core (SettableClock) instead of a per-module copy.
     testImplementation(testFixtures(project(":reputation-pool-core")))
 
