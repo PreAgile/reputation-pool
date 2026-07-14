@@ -158,6 +158,49 @@ class PostgresAuditTrailTest {
     }
 
     @Test
+    @DisplayName("close() racing active emitters still loses nothing silently: every attempted event"
+            + " is either written or counted as dropped")
+    void closeRacingEmittersLosesNothingSilently() throws InterruptedException {
+        int emitters = 8;
+        int perEmitter = 200;
+        List<PoolEvent> written = Collections.synchronizedList(new ArrayList<>());
+        PostgresAuditTrail trail = new PostgresAuditTrail(written::addAll, 64);
+
+        CountDownLatch start = new CountDownLatch(1);
+        // Counted down once by every emitter at its halfway mark, so the close() below is guaranteed
+        // to run while all threads are still actively emitting — the window emitLock guards, which
+        // the contention test above (emit fully before close) never opens.
+        CountDownLatch halfway = new CountDownLatch(emitters);
+        List<Thread> threads = new ArrayList<>();
+        for (int t = 0; t < emitters; t++) {
+            int emitterId = t;
+            threads.add(Thread.ofPlatform().start(() -> {
+                await(start);
+                for (int i = 0; i < perEmitter; i++) {
+                    trail.emit(event(emitterId * perEmitter + i));
+                    if (i == perEmitter / 2) {
+                        halfway.countDown();
+                    }
+                }
+            }));
+        }
+        start.countDown();
+        await(halfway);
+        trail.close();
+        for (Thread thread : threads) {
+            thread.join();
+        }
+
+        // Conservation must hold under every interleaving, not just the ones this run happened to
+        // schedule: an emit before the flag flip was accepted (and flushed) or overflowed (and
+        // counted); one after was rejected (and counted). The defect emitLock closed — offered into a
+        // queue whose writer already exited, neither written nor counted — is the only way this sum
+        // breaks. (Forcing specific interleavings is Lincheck's job, tracked as follow-up work.)
+        assertThat(written.size() + trail.droppedCount()).isEqualTo((long) emitters * perEmitter);
+        assertThat(written).doesNotHaveDuplicates();
+    }
+
+    @Test
     @DisplayName("a slow audit writer never blocks the pool thread that emitted")
     void slowWriterNeverBlocksEmit() throws InterruptedException {
         CountDownLatch writerEntered = new CountDownLatch(1);
