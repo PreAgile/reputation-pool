@@ -97,6 +97,37 @@ class ResourcePoolTest {
     }
 
     @Test
+    void acquireUndoesItsClaimWhenTheResourceIsBlockedBetweenSnapshotAndClaim() {
+        // The undo path: acquire snapshots the blocklist, claims, re-checks, and rolls the claim back
+        // if a block landed in between. This window is deterministic to open from the inside — the
+        // selection strategy runs exactly between snapshot and claim — and this is the path's one
+        // deterministic guard: the Lincheck suite proved the undo's promise is a real-time property
+        // no black-box concurrency oracle can witness (see ResourcePoolBlockBypassLincheckTest).
+        var poolHolder = new ResourcePool[1];
+        var sabotaged = new java.util.concurrent.atomic.AtomicBoolean();
+        SelectionStrategy blockDuringSelect = (candidates, random) -> {
+            var pick = candidates.get(0);
+            if (sabotaged.compareAndSet(false, true)) { // only the first acquire gets ambushed
+                poolHolder[0].block(pick.resourceId(), Duration.ofMinutes(10));
+            }
+            return java.util.Optional.of(pick);
+        };
+        var engine = new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 3, 2);
+        poolHolder[0] = new ResourcePool(engine, blockDuringSelect, sink, fixed(), new Random(1), TTL);
+        var pool = poolHolder[0];
+        pool.register(proxy("p1"));
+
+        // The claim wins, the re-check sees the fresh block, and the grant is rolled back.
+        assertThat(pool.acquire(CTX)).isEmpty();
+        assertThat(sink.events).noneMatch(event -> event instanceof PoolEvent.ResourceLeased);
+
+        // The rollback truly released the claim: unblocked, the resource is grantable again — had the
+        // undo leaked the lease, this second acquire would still find it held.
+        pool.unblock(proxy("p1"));
+        assertThat(pool.acquire(CTX)).isPresent();
+    }
+
+    @Test
     void releaseReturnsTheResourceAndEmitsLeaseReleased() {
         var pool = poolAt(fixed());
         pool.register(proxy("p1"));

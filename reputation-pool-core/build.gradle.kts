@@ -72,6 +72,20 @@ afterEvaluate {
     }
 }
 
+// A separate source set for Lincheck linearizability tests. Like persistence's integrationTest, it
+// is deliberately NOT wired into `check`/`build` — model checking explores interleavings for minutes,
+// not seconds — so `./gradlew build` compiles it but never runs it. The `lincheckTest` task below
+// runs it on demand and in CI. Zero-dependency stays a *runtime* principle: Lincheck (and its Kotlin
+// stdlib) exists on this test classpath only, the same standing as jqwik and ArchUnit.
+val lincheckTest =
+    sourceSets.create("lincheckTest") {
+        compileClasspath += sourceSets.main.get().output + sourceSets.test.get().output
+        runtimeClasspath += sourceSets.main.get().output + sourceSets.test.get().output
+    }
+
+configurations["lincheckTestImplementation"].extendsFrom(configurations.testImplementation.get())
+configurations["lincheckTestRuntimeOnly"].extendsFrom(configurations.testRuntimeOnly.get())
+
 dependencies {
     // core has zero runtime dependencies (JDK only); everything below is test scope
     testImplementation(platform("org.junit:junit-bom:6.1.1"))
@@ -87,6 +101,10 @@ dependencies {
     // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik run on it). 1.2.3 is the
     // current release and requires pitest core >= 1.19.4, satisfied by the version below.
     pitest("org.pitest:pitest-junit5-plugin:1.2.3")
+
+    // Linearizability checking for the concurrent facade (LeaseRegistry, ResourcePool).
+    // slf4j-nop is inherited from testRuntimeOnly above, silencing Lincheck's slf4j warning too.
+    "lincheckTestImplementation"("org.jetbrains.lincheck:lincheck:3.6")
 }
 
 tasks.test {
@@ -95,6 +113,30 @@ tasks.test {
         events("failed", "skipped")
     }
 }
+
+// On demand and in CI: `./gradlew :reputation-pool-core:lincheckTest`. Minutes, not seconds — model
+// checking explores thread interleavings exhaustively within its bounds.
+val lincheckTestTask =
+    tasks.register<Test>("lincheckTest") {
+        description = "Proves linearizability of the concurrent facade with Lincheck."
+        group = "verification"
+        testClassesDirs = lincheckTest.output.classesDirs
+        classpath = lincheckTest.runtimeClasspath
+        useJUnitPlatform()
+        // Headroom for the model checker's interleaving exploration.
+        maxHeapSize = "3g"
+        // Lincheck's bytecode instrumentation is incompatible with compact object headers on JDK 25
+        // (https://github.com/JetBrains/lincheck/issues/915); Caffeine ships the same workaround.
+        // The add-opens lets Lincheck's trace collector reflect into JDK-internal receivers (lambda
+        // proxies, ConcurrentHashMap nodes) it walks while reconstructing an interleaving.
+        jvmArgs("-XX:-UseCompactObjectHeaders", "--add-opens", "java.base/java.util=ALL-UNNAMED")
+        // Iteration counts are tunable without a code change: -Dlincheck.modelChecking.iterations=…
+        systemProperties(providers.systemPropertiesPrefixedBy("lincheck").get())
+        shouldRunAfter(tasks.test)
+        testLogging {
+            events("failed", "skipped")
+        }
+    }
 
 tasks.withType<Javadoc>().configureEach {
     // `all,-missing` gates on broken structure (dangling @link/@throws, malformed HTML) without
