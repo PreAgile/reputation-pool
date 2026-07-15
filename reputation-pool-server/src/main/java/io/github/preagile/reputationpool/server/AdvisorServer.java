@@ -53,6 +53,11 @@ import org.postgresql.ds.PGSimpleDataSource;
  * an orderly shutdown. The store is an injected port — a concrete implementation (PostgreSQL) is
  * chosen only in {@link #main}. With no store the lifecycle hooks are all no-ops, so the in-memory
  * mode stays exactly as before.
+ *
+ * <p>When an {@link AuditRetention} is also supplied, the durable lifecycle gains one more chore: a
+ * periodic purge that trims audit events older than the retention, riding the checkpointer's
+ * scheduler with the same exception isolation. No retention means no purge task at all — the audit
+ * trail then grows unbounded, exactly as before the knob existed.
  */
 public final class AdvisorServer {
 
@@ -68,28 +73,43 @@ public final class AdvisorServer {
     /** How often the background checkpointer saves the pool's snapshot to the store. */
     private static final Duration DEFAULT_CHECKPOINT_INTERVAL = Duration.ofSeconds(30);
 
+    /** How often the retention task trims the audit trail, when retention is configured at all. */
+    private static final Duration DEFAULT_AUDIT_PURGE_INTERVAL = Duration.ofHours(1);
+
     /** DB connection is env-driven; these are the variables {@link #main} reads. */
     private static final String ENV_DB_URL = "REPUTATION_POOL_DB_URL";
 
     private static final String ENV_DB_USERNAME = "REPUTATION_POOL_DB_USERNAME";
     private static final String ENV_DB_PASSWORD = "REPUTATION_POOL_DB_PASSWORD";
 
+    /** Opt-in audit retention as an ISO-8601 duration (e.g. {@code P30D}); unset means never purge. */
+    private static final String ENV_AUDIT_RETENTION = "REPUTATION_POOL_AUDIT_RETENTION";
+
     private final Server server;
     private final EventBroadcaster broadcaster;
     private final ResourcePool pool;
     private final Optional<ResourceStore> store;
     private final Duration checkpointInterval;
+    private final Clock clock;
+    private final Optional<AuditRetention> auditRetention;
 
     /** Started lazily in {@link #start()} only when a store is present; null otherwise. */
     private ScheduledExecutorService checkpointer;
 
     private AdvisorServer(
-            Server server, EventBroadcaster broadcaster, ResourcePool pool, Optional<ResourceStore> store) {
+            Server server,
+            EventBroadcaster broadcaster,
+            ResourcePool pool,
+            Optional<ResourceStore> store,
+            Clock clock,
+            Optional<AuditRetention> auditRetention) {
         this.server = server;
         this.broadcaster = broadcaster;
         this.pool = pool;
         this.store = store;
         this.checkpointInterval = DEFAULT_CHECKPOINT_INTERVAL;
+        this.clock = clock;
+        this.auditRetention = auditRetention;
     }
 
     /** Production assembly: system clock, default randomness, the default lease TTL, no store. */
@@ -99,7 +119,7 @@ public final class AdvisorServer {
 
     /** Test-friendly assembly with no store: every source of nondeterminism is handed in by the caller. */
     public static AdvisorServer create(int port, Clock clock, RandomGenerator random, Duration leaseTtl) {
-        return assemble(port, clock, random, leaseTtl, Optional.empty(), Optional.empty());
+        return assemble(port, clock, random, leaseTtl, Optional.empty(), Optional.empty(), Optional.empty());
     }
 
     /**
@@ -111,7 +131,7 @@ public final class AdvisorServer {
     public static AdvisorServer create(
             int port, Clock clock, RandomGenerator random, Duration leaseTtl, ResourceStore store) {
         Objects.requireNonNull(store, "store must not be null");
-        return assemble(port, clock, random, leaseTtl, Optional.of(store), Optional.empty());
+        return assemble(port, clock, random, leaseTtl, Optional.of(store), Optional.empty(), Optional.empty());
     }
 
     /**
@@ -132,7 +152,34 @@ public final class AdvisorServer {
             EventSink auditSink) {
         Objects.requireNonNull(store, "store must not be null");
         Objects.requireNonNull(auditSink, "auditSink must not be null");
-        return assemble(port, clock, random, leaseTtl, Optional.of(store), Optional.of(auditSink));
+        return assemble(port, clock, random, leaseTtl, Optional.of(store), Optional.of(auditSink), Optional.empty());
+    }
+
+    /**
+     * The fully durable assembly of the audit-sink overload, plus a bounded trail: {@code retention}
+     * turns on the periodic purge that trims audit events older than {@code retention.maxAge()}. The
+     * purge task rides the same scheduler as the checkpoint, computes its cutoff from the injected
+     * {@code clock}, and is exception-isolated the same way — a failing purge is logged and retried on
+     * the next interval, never fatal. Without this overload (no retention configured) nothing is ever
+     * purged: bounding the trail is strictly opt-in.
+     *
+     * @param store the durable store to restore from and checkpoint to; never null
+     * @param auditSink the second consumer of every pool event; never null
+     * @param retention how much audit history to keep and the purger that trims the rest; never null
+     */
+    public static AdvisorServer create(
+            int port,
+            Clock clock,
+            RandomGenerator random,
+            Duration leaseTtl,
+            ResourceStore store,
+            EventSink auditSink,
+            AuditRetention retention) {
+        Objects.requireNonNull(store, "store must not be null");
+        Objects.requireNonNull(auditSink, "auditSink must not be null");
+        Objects.requireNonNull(retention, "retention must not be null");
+        return assemble(
+                port, clock, random, leaseTtl, Optional.of(store), Optional.of(auditSink), Optional.of(retention));
     }
 
     /** The single assembler every overload family routes through. */
@@ -142,7 +189,8 @@ public final class AdvisorServer {
             RandomGenerator random,
             Duration leaseTtl,
             Optional<ResourceStore> store,
-            Optional<EventSink> auditSink) {
+            Optional<EventSink> auditSink,
+            Optional<AuditRetention> auditRetention) {
         Objects.requireNonNull(clock, "clock must not be null");
         Objects.requireNonNull(random, "random must not be null");
         Objects.requireNonNull(leaseTtl, "leaseTtl must not be null");
@@ -165,20 +213,35 @@ public final class AdvisorServer {
         Server server = ServerBuilder.forPort(port)
                 .addService(new ReputationAdvisorService(pool, broadcaster))
                 .build();
-        return new AdvisorServer(server, broadcaster, pool, store);
+        return new AdvisorServer(server, broadcaster, pool, store, clock, auditRetention);
     }
 
     public AdvisorServer start() throws IOException {
         server.start();
         if (store.isPresent()) {
             checkpointer = Executors.newSingleThreadScheduledExecutor(daemonThreadFactory());
-            checkpointer.scheduleAtFixedRate(
-                    this::checkpoint,
-                    checkpointInterval.toMillis(),
-                    checkpointInterval.toMillis(),
-                    TimeUnit.MILLISECONDS);
+            scheduleLifecycleTasks(checkpointer);
         }
         return this;
+    }
+
+    /**
+     * Puts the periodic lifecycle chores on {@code scheduler}: always the checkpoint, plus the audit
+     * purge when retention is configured — no retention, no purge task, and the trail grows unbounded
+     * as before. Package-private so tests can hand in a recording scheduler and verify exactly what
+     * was scheduled (and run it), with no scheduler timing; {@link #start()} hands in the real
+     * checkpointer executor.
+     */
+    void scheduleLifecycleTasks(ScheduledExecutorService scheduler) {
+        scheduler.scheduleAtFixedRate(
+                this::checkpoint, checkpointInterval.toMillis(), checkpointInterval.toMillis(), TimeUnit.MILLISECONDS);
+        if (auditRetention.isPresent()) {
+            scheduler.scheduleAtFixedRate(
+                    this::purgeExpiredAuditEvents,
+                    DEFAULT_AUDIT_PURGE_INTERVAL.toMillis(),
+                    DEFAULT_AUDIT_PURGE_INTERVAL.toMillis(),
+                    TimeUnit.MILLISECONDS);
+        }
     }
 
     /** The bound port; useful when created with port 0 (pick any free port). */
@@ -212,6 +275,30 @@ public final class AdvisorServer {
                 s.save(pool.snapshot());
             } catch (RuntimeException e) {
                 LOG.log(Level.WARNING, "checkpoint save failed; will retry on the next interval", e);
+            }
+        });
+    }
+
+    /**
+     * Trims the audit trail down to the configured retention, if any: everything older than
+     * {@code clock.instant() - maxAge} is purged. Exception-isolated exactly like {@link #checkpoint()}
+     * and for the same reason — {@code scheduleAtFixedRate} cancels all future runs the first time its
+     * task throws, so a purge that let a transient DB error escape would silently end retention for the
+     * rest of the process's life. Swallowing means one bad purge is skipped, not fatal. Extracted as a
+     * method so tests can trigger a purge directly, with no scheduler timing.
+     *
+     * <p>With no retention configured this is a no-op — the trail then grows unbounded, exactly as it
+     * did before the knob existed.
+     */
+    void purgeExpiredAuditEvents() {
+        auditRetention.ifPresent(retention -> {
+            try {
+                long purged = retention.purger().purgeOlderThan(clock.instant().minus(retention.maxAge()));
+                if (purged > 0) {
+                    LOG.log(Level.INFO, "audit retention purged {0} events older than {1}", purged, retention.maxAge());
+                }
+            } catch (RuntimeException e) {
+                LOG.log(Level.WARNING, "audit purge failed; will retry on the next interval", e);
             }
         });
     }
@@ -269,13 +356,31 @@ public final class AdvisorServer {
             // Flyway brings the schema up to date before the store touches any table.
             Flyway.configure().dataSource(dataSource).load().migrate();
             auditTrail = new PostgresAuditTrail(dataSource);
-            advisor = AdvisorServer.create(
-                    port,
-                    Clock.systemUTC(),
-                    RandomGenerator.getDefault(),
-                    DEFAULT_LEASE_TTL,
-                    new PostgresResourceStore(dataSource),
-                    auditTrail);
+            PostgresResourceStore resourceStore = new PostgresResourceStore(dataSource);
+            String retentionEnv = System.getenv(ENV_AUDIT_RETENTION);
+            if (retentionEnv != null && !retentionEnv.isBlank()) {
+                // Opt-in retention: the trail is bounded only when the operator says how much history
+                // to keep (ISO-8601, e.g. P30D). Unset keeps the original never-purged behavior.
+                AuditRetention retention =
+                        new AuditRetention(Duration.parse(retentionEnv.trim()), auditTrail::purgeOlderThan);
+                LOG.log(Level.INFO, "audit retention enabled: keeping {0} of history", retention.maxAge());
+                advisor = AdvisorServer.create(
+                        port,
+                        Clock.systemUTC(),
+                        RandomGenerator.getDefault(),
+                        DEFAULT_LEASE_TTL,
+                        resourceStore,
+                        auditTrail,
+                        retention);
+            } else {
+                advisor = AdvisorServer.create(
+                        port,
+                        Clock.systemUTC(),
+                        RandomGenerator.getDefault(),
+                        DEFAULT_LEASE_TTL,
+                        resourceStore,
+                        auditTrail);
+            }
         } else {
             LOG.log(Level.INFO, "starting in in-memory mode (no {0} set; state will not survive restart)", ENV_DB_URL);
             auditTrail = null;
