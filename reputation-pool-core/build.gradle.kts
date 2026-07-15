@@ -88,7 +88,7 @@ configurations["lincheckTestRuntimeOnly"].extendsFrom(configurations.testRuntime
 
 dependencies {
     // core has zero runtime dependencies (JDK only); everything below is test scope
-    testImplementation(platform("org.junit:junit-bom:6.1.1"))
+    testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("net.jqwik:jqwik:1.10.1")

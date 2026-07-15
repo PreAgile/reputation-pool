@@ -4,7 +4,7 @@ plugins {
     `java-library`
     id("com.diffplug.spotless")
     // Generates the protobuf message classes and the gRPC service stubs from src/main/proto.
-    id("com.google.protobuf") version "0.9.4"
+    id("com.google.protobuf") version "0.10.0"
 }
 
 java {
@@ -18,8 +18,8 @@ repositories {
     mavenCentral()
 }
 
-val grpcVersion = "1.69.0"
-val protobufVersion = "4.29.3"
+val grpcVersion = "1.82.2"
+val protobufVersion = "4.35.1"
 
 dependencies {
     // The server ring depends inward on the pure core; the dependency arrow never points the other way.
@@ -44,7 +44,7 @@ dependencies {
 
     // In-process transport: contract tests ride the real gRPC wiring without sockets or ports.
     testImplementation("io.grpc:grpc-inprocess:$grpcVersion")
-    testImplementation(platform("org.junit:junit-bom:6.1.1"))
+    testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     // Property tests attack the proto <-> domain mapping invariants (round-trip, enum totality).
