@@ -20,7 +20,7 @@ dependencies {
     // Adapters may use frameworks (core may not). SLF4J is the only runtime dependency the demo needs.
     implementation("org.slf4j:slf4j-api:2.0.18")
 
-    testImplementation(platform("org.junit:junit-bom:6.1.1"))
+    testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     // Shared test helpers from core (SettableClock) instead of per-module copies.
     testImplementation(testFixtures(project(":reputation-pool-core")))
