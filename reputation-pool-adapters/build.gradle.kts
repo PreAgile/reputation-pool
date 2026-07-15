@@ -26,6 +26,9 @@ dependencies {
     testImplementation(testFixtures(project(":reputation-pool-core")))
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("org.assertj:assertj-core:3.27.7")
+    // Property tests for the classifiers' totality contract (same version as the other modules).
+    // Test scope only: the module's runtime dependency set stays SLF4J-only.
+    testImplementation("net.jqwik:jqwik:1.10.1")
     // WireMock drives the integration test: a real HTTP endpoint the adapter probes over java.net.http.
     // Used programmatically (WireMockServer), not via its JUnit extension, to stay off the JUnit version.
     testImplementation("org.wiremock:wiremock:3.13.2")
