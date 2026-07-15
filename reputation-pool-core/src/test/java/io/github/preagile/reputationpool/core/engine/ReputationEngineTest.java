@@ -27,12 +27,11 @@ import io.github.preagile.reputationpool.core.domain.ReputationCell;
 import io.github.preagile.reputationpool.core.domain.ResourceId;
 import io.github.preagile.reputationpool.core.domain.ResourceKind;
 import io.github.preagile.reputationpool.core.domain.ResourceState;
+import io.github.preagile.reputationpool.core.testing.DomainArbitraries;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
-import net.jqwik.api.Arbitraries;
 import net.jqwik.api.Arbitrary;
-import net.jqwik.api.Combinators;
 import net.jqwik.api.ForAll;
 import net.jqwik.api.Property;
 import net.jqwik.api.Provide;
@@ -338,17 +337,8 @@ class ReputationEngineTest {
 
     @Provide
     Arbitrary<List<Outcome>> outcomeSequences() {
-        return anyOutcome().list().ofMinSize(1).ofMaxSize(200);
-    }
-
-    private static Arbitrary<Outcome> anyOutcome() {
-        Arbitrary<Outcome> successes =
-                Arbitraries.integers().between(0, 5000).map(ms -> new Outcome.Success(Duration.ofMillis(ms)));
-        Arbitrary<Outcome> failures = Combinators.combine(
-                        Arbitraries.of(FailureType.class),
-                        Arbitraries.integers().between(0, 5000))
-                .as((type, ms) -> new Outcome.Failure(type, Duration.ofMillis(ms)));
-        return Arbitraries.oneOf(successes, failures);
+        // shared domain generator from testFixtures: successes and failures over every FailureType
+        return DomainArbitraries.outcomes().list().ofMinSize(1).ofMaxSize(200);
     }
 
     // Drives a fresh cell to COOLING by applying COOL_AFTER consecutive failures.

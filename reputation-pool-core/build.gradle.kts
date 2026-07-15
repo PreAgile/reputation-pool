@@ -93,6 +93,9 @@ dependencies {
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("net.jqwik:jqwik:1.10.1")
     testImplementation("org.assertj:assertj-core:3.27.7")
+    // DomainArbitraries returns jqwik Arbitrary types from testFixtures, so the dependency is part
+    // of the fixtures' API. In-build only: the testFixtures variants are skipped from publication.
+    testFixturesApi("net.jqwik:jqwik:1.10.1")
     testImplementation("com.tngtech.archunit:archunit-junit5:1.4.2")
     // ArchUnit pulls in slf4j-api with no provider on the test classpath, so every run prints the
     // "No SLF4J providers were found" NOP warning. slf4j-nop is that provider (a no-op sink).

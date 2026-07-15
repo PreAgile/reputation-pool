@@ -18,6 +18,7 @@ package io.github.preagile.reputationpool.core;
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
 
 import com.tngtech.archunit.core.importer.ImportOption;
+import com.tngtech.archunit.core.importer.Location;
 import com.tngtech.archunit.junit.AnalyzeClasses;
 import com.tngtech.archunit.junit.ArchTest;
 import com.tngtech.archunit.lang.ArchRule;
@@ -31,8 +32,26 @@ import com.tngtech.archunit.lang.ArchRule;
  */
 @AnalyzeClasses(
         packages = "io.github.preagile.reputationpool.core",
-        importOptions = ImportOption.DoNotIncludeTests.class)
+        importOptions = {ImportOption.DoNotIncludeTests.class, ArchitectureTest.DoNotIncludeTestFixtures.class})
 class ArchitectureTest {
+
+    /**
+     * Test fixtures ({@code SettableClock}, {@code DomainArbitraries}) are test-scoped helpers with
+     * the same standing as the test sources ArchUnit already excludes: they are consumed only by
+     * this module's tests and by sibling modules' tests via {@code testFixtures(project(...))}, and
+     * their publication variants are skipped, so they can never reach a runtime classpath. jqwik
+     * there does not breach the zero-runtime-dependency principle — the rules below guard the
+     * production {@code main} sources only. {@link ImportOption.DoNotIncludeTests} matches only the
+     * {@code test} output directory, so the {@code testFixtures} one needs its own exclusion.
+     */
+    static final class DoNotIncludeTestFixtures implements ImportOption {
+        @Override
+        public boolean includes(Location location) {
+            // the fixtures reach the test classpath as Gradle's test-fixtures jar; the classes
+            // directory form is matched too in case the classpath wiring ever changes
+            return !location.contains("-test-fixtures.jar") && !location.contains("/testFixtures/");
+        }
+    }
 
     /**
      * Principle 1: core is pure Java. No Spring, Netty, JDBC, gRPC — no dependency outside the JDK
