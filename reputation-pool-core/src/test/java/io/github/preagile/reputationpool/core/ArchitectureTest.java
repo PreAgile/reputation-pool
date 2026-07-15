@@ -16,6 +16,7 @@
 package io.github.preagile.reputationpool.core;
 
 import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
+import static com.tngtech.archunit.library.dependencies.SlicesRuleDefinition.slices;
 
 import com.tngtech.archunit.core.importer.ImportOption;
 import com.tngtech.archunit.core.importer.Location;
@@ -98,4 +99,19 @@ class ArchitectureTest {
             .onlyDependOnClassesThat()
             .resideInAnyPackage("java..", "..core.domain..", "..core.port..")
             .allowEmptyShould(true);
+
+    /**
+     * The three rules above are direction checks — each layer's allowlist says where its arrows may
+     * point. None of them can see a cycle forming <em>between</em> the top-level packages that the
+     * allowlists mutually permit: {@code engine} and {@code pool} may both depend on each other's
+     * package under {@code CORE_DEPENDS_ONLY_ON_THE_JDK_AND_ITSELF}, so a back-and-forth dependency
+     * would pass every rule above while quietly welding two packages into one. This rule closes
+     * that gap: the top-level core packages ({@code domain}, {@code engine}, {@code pool},
+     * {@code port}) must form a DAG — never a dependency cycle.
+     */
+    @ArchTest
+    static final ArchRule CORE_PACKAGES_ARE_FREE_OF_CYCLES = slices().matching(
+                    "io.github.preagile.reputationpool.core.(*)..")
+            .should()
+            .beFreeOfCycles();
 }
