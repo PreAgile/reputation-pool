@@ -1,18 +1,26 @@
 # Releasing `reputation-pool-core`
 
-Only **`reputation-pool-core`** is published to Maven Central, as
-`io.github.preagile:reputation-pool-core`. The `adapters`, `persistence`, and `server` modules are
-not published — they are consumers of the core, not artifacts. Internal test fixtures (the
-`testFixtures` source set: `SettableClock`, `DomainArbitraries`) are deliberately excluded from the
-publication (see the `withVariantsFromConfiguration { skip() }` block in
-`reputation-pool-core/build.gradle.kts`), so no test-only code reaches Central.
+Two modules are published to Maven Central, sharing one version:
+
+- **`reputation-pool-core`** — `io.github.preagile:reputation-pool-core` (the pure decision engine).
+- **`reputation-pool-persistence`** — `io.github.preagile:reputation-pool-persistence` (the
+  PostgreSQL adapter: snapshot store + audit trail). First published at 0.2.0.
+
+The `adapters` and `server` modules are not published — they are consumers, not artifacts. Core's
+internal test fixtures (the `testFixtures` source set: `SettableClock`, `DomainArbitraries`) are
+deliberately excluded from core's publication (see the `withVariantsFromConfiguration { skip() }`
+block in `reputation-pool-core/build.gradle.kts`); persistence has no test fixtures, and its
+`integrationTest` source set is not part of the published `java` component, so neither ships to
+Central.
 
 Publishing is driven by the [`com.vanniktech.maven.publish`](https://vanniktech.github.io/gradle-maven-publish-plugin/)
-plugin (version `0.37.0`), already configured in `reputation-pool-core/build.gradle.kts`:
+plugin (version `0.37.0`), configured in each publishable module's `build.gradle.kts`:
 `publishToMavenCentral()` targets the Central Portal, `signAllPublications()` GPG-signs every
 artifact, and the version comes from the `releaseVersion` Gradle property at publish time (default
-`0.1.0-SNAPSHOT`). The build file needs no edits to cut a release — you pass the version on the
-command line.
+`0.1.0-SNAPSHOT`). The build files need no edits to cut a release — you pass the version on the
+command line. Persistence carries runtime dependencies (the PostgreSQL driver and Flyway) into its
+generated POM by design; this is expected for an adapter and does not violate core's zero-dependency
+rule (core has none).
 
 This procedure is run **by a maintainer on a machine that holds the Central Portal credentials and
 the GPG signing key**. It is not part of CI today (see "Future" at the end).
@@ -71,19 +79,26 @@ Any of these works; pick one and do not commit secrets:
 The DSL is `publishToMavenCentral()` **without** automatic release, so publishing is a two-step,
 manually-confirmed process — the recommended default for the first releases:
 
+Both publishable modules are released together under the same version, so pass both tasks in one
+invocation:
+
 ```bash
-./gradlew :reputation-pool-core:publishToMavenCentral -PreleaseVersion=0.2.0
+./gradlew :reputation-pool-core:publishToMavenCentral \
+          :reputation-pool-persistence:publishToMavenCentral \
+          -PreleaseVersion=0.2.0
 ```
 
-This builds, signs, and uploads a **deployment** to the Central Portal but does **not** release it.
-Then go to <https://central.sonatype.com/publishing/deployments>, verify the deployment validated,
-and click **Publish** to release it to Maven Central.
+This builds, signs, and uploads a **deployment** for each module to the Central Portal but does
+**not** release them. Then go to <https://central.sonatype.com/publishing/deployments>, verify both
+deployments validated, and click **Publish** to release them to Maven Central.
 
 If you would rather have Gradle release automatically once validation passes (no portal click), use
 the combined task instead:
 
 ```bash
-./gradlew :reputation-pool-core:publishAndReleaseToMavenCentral -PreleaseVersion=0.2.0
+./gradlew :reputation-pool-core:publishAndReleaseToMavenCentral \
+          :reputation-pool-persistence:publishAndReleaseToMavenCentral \
+          -PreleaseVersion=0.2.0
 ```
 
 `publishToMavenCentral` uploads only; `publishAndReleaseToMavenCentral` uploads **and** auto-releases
@@ -110,9 +125,14 @@ baseline) point at a released version instead of the moving `main`.
 
 ## 5. Post-publish smoke check
 
-Central propagation can take a few minutes to tens of minutes. Once the artifact is searchable at
-<https://central.sonatype.com/artifact/io.github.preagile/reputation-pool-core/0.2.0>, verify a fresh
-consumer resolves and compiles against the public API.
+Central propagation can take a few minutes to tens of minutes. Verify both artifacts are searchable:
+
+- <https://central.sonatype.com/artifact/io.github.preagile/reputation-pool-core/0.2.0>
+- <https://central.sonatype.com/artifact/io.github.preagile/reputation-pool-persistence/0.2.0>
+
+Then verify a fresh consumer resolves and compiles against the public API. Depending on
+`reputation-pool-persistence` also pulls in `reputation-pool-core` transitively (it is an `api`
+dependency), so a single dependency on the adapter exercises both POMs:
 
 Gradle:
 
@@ -122,27 +142,32 @@ cat > build.gradle.kts <<'EOF'
 plugins { `java-library` }
 repositories { mavenCentral() }
 java { toolchain { languageVersion = JavaLanguageVersion.of(25) } }
-dependencies { implementation("io.github.preagile:reputation-pool-core:0.2.0") }
+dependencies {
+    // the adapter, which brings reputation-pool-core in transitively (api dependency)
+    implementation("io.github.preagile:reputation-pool-persistence:0.2.0")
+}
 EOF
 mkdir -p src/main/java
 cat > src/main/java/Smoke.java <<'EOF'
 import io.github.preagile.reputationpool.core.domain.ResourceId;
 import io.github.preagile.reputationpool.core.domain.ResourceKind;
+import io.github.preagile.reputationpool.persistence.PostgresResourceStore;
 
 public class Smoke {
     public static void main(String[] args) {
-        // resolves the jar and compiles against a public API call
+        // core type comes transitively; adapter type comes from the persistence jar
         var id = new ResourceId(ResourceKind.PROXY, "10.0.0.7:8080");
-        System.out.println(id);
+        Class<?> store = PostgresResourceStore.class;
+        System.out.println(id + " " + store.getSimpleName());
     }
 }
 EOF
 gradle compileJava --refresh-dependencies
 ```
 
-Maven equivalent — a single dependency on `io.github.preagile:reputation-pool-core:0.2.0` and a
-`mvn -q compile` against the same `ResourceId` call — is fine too. A clean compile against a public
-type confirms the artifact and its POM resolved.
+Maven equivalent — a single dependency on `io.github.preagile:reputation-pool-persistence:0.2.0` and
+a `mvn -q compile` against the same two types — is fine too. A clean compile confirms both artifacts
+and their POMs resolved (the driver and Flyway coming transitively from the persistence POM).
 
 ## Future
 

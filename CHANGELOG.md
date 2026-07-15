@@ -3,10 +3,11 @@
 All notable changes to `reputation-pool-core` — the module published to Maven Central as
 `io.github.preagile:reputation-pool-core` — are documented here.
 
-Only the **published core surface** is in scope: the `domain`, `engine`, and `port` packages that
-ship in the jar a consumer depends on. The `adapters`, `persistence`, and `server` modules are not
-published and are not tracked here, and neither are internal test fixtures (they are deliberately
-excluded from the Central publication).
+Two modules are published to Maven Central: **`reputation-pool-core`** (the pure decision engine —
+`io.github.preagile:reputation-pool-core`) and, from 0.2.0, **`reputation-pool-persistence`** (the
+PostgreSQL adapter — `io.github.preagile:reputation-pool-persistence`). Both share one version. The
+`adapters` and `server` modules are not published and are not tracked here, and neither are internal
+test fixtures or integration-test source sets (they are not part of the published artifacts).
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -15,10 +16,18 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.2.0] - 2026-07-15
 
-The snapshot/persistence surface added since 0.1.0. All additions are backward-compatible; one type
-moved package (see Changed).
+The snapshot/persistence surface added since 0.1.0, and the first publication of the PostgreSQL
+adapter. All core additions are backward-compatible; one core type moved package (see Changed).
 
 ### Added
+
+- **`reputation-pool-persistence` is now published to Maven Central** for the first time
+  (`io.github.preagile:reputation-pool-persistence`). It provides the PostgreSQL implementations of
+  the core's `ResourceStore` (whole-pool snapshot store) and `EventSink` (append-only audit trail)
+  ports, plus their Flyway schema, on plain JDBC. Consumers can now depend on the Postgres adapter
+  directly instead of vendoring it; it depends (`api`) on `reputation-pool-core`, so the core domain
+  types come transitively. Unlike core, this module carries runtime dependencies by design (the
+  PostgreSQL driver and Flyway).
 
 - **`ResourceStore` port** (`core.port`) — the I/O boundary for persisting the pool's durable state,
   so it survives a process restart. As with `EventSink`, the core declares the contract in domain
