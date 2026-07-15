@@ -89,6 +89,18 @@ resource everywhere.
 | `reputation-pool-persistence` | PostgreSQL adapter — snapshot store + append-only audit trail (plain JDBC + Flyway). | Done |
 | `reputation-pool-server` | gRPC advisor (L2) + durable lifecycle wiring (L3); virtual-thread probing and observability later. | In progress |
 
+### Persistent mode
+
+The server runs in-memory by default; setting `REPUTATION_POOL_DB_URL` (plus
+`REPUTATION_POOL_DB_USERNAME` / `REPUTATION_POOL_DB_PASSWORD`) switches it to persistent mode — Flyway
+migrates the schema, the pool restores from the last snapshot, and every pool event is appended to the
+audit trail.
+
+The audit trail is append-only and grows without bound unless you opt in to retention:
+`REPUTATION_POOL_AUDIT_RETENTION` takes an ISO-8601 duration (e.g. `P30D` for thirty days) and turns on
+an hourly background purge of events older than that — the purge only ever trims the oldest tail of the
+history, never rewrites what survives. Unset means never purge, exactly the pre-knob behavior.
+
 ## Architecture
 
 The repository is one hexagon that grows outward from a pure core, and every dependency points **inward**:
