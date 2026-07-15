@@ -36,6 +36,11 @@ jobs:
       - name: Persistence integration tests (Testcontainers)
         run: ./gradlew :reputation-pool-persistence:integrationTest --no-daemon
 
+      # Linearizability proofs are likewise excluded from `build` (model checking explores thread
+      # interleavings for minutes, not seconds) and run here as their own gate.
+      - name: Lincheck linearizability tests
+        run: ./gradlew :reputation-pool-core:lincheckTest --no-daemon
+
       - name: Upload test reports
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7

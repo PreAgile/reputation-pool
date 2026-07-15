@@ -42,6 +42,11 @@ Enforced by the build and by review, not by convention:
 - **Mutation testing with PIT** verifies the tests actually have teeth (a surviving mutant
   is an assertion that never fires). Coverage alone is a weaker bar — it proves lines ran,
   not that a broken change would be caught. Run on demand: `./gradlew pitest`.
+- **Linearizability with Lincheck** for the concurrent facade (`LeaseRegistry`,
+  `ResourcePool`): a dedicated `lincheckTest` source set in core, excluded from `build`
+  (model checking takes minutes) and run as its own CI step or on demand via
+  `./gradlew :reputation-pool-core:lincheckTest`. Unlike the stress tests it proves the
+  absence of interleaving bugs within its bounds and prints a minimal trace on failure.
 - **Integration / Testcontainers does not apply to `core`** — it performs no I/O. That
   belongs to the future server/adapter module, where ports are bound to real infrastructure.
 
