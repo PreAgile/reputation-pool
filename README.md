@@ -99,7 +99,10 @@ audit trail.
 The audit trail is append-only and grows without bound unless you opt in to retention:
 `REPUTATION_POOL_AUDIT_RETENTION` takes an ISO-8601 duration (e.g. `P30D` for thirty days) and turns on
 an hourly background purge of events older than that — the purge only ever trims the oldest tail of the
-history, never rewrites what survives. Unset means never purge, exactly the pre-knob behavior.
+history, never rewrites what survives. The bound is honest at the margin: events are purged once they
+are older than the retention *and* no younger-stamped event precedes them in the trail, so the
+effective upper bound is the retention plus at most the emitters' timestamp skew and one purge period.
+Unset means never purge, exactly the pre-knob behavior.
 
 ## Architecture
 

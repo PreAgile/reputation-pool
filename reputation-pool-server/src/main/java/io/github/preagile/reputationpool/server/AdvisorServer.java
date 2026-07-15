@@ -220,22 +220,28 @@ public final class AdvisorServer {
         server.start();
         if (store.isPresent()) {
             checkpointer = Executors.newSingleThreadScheduledExecutor(daemonThreadFactory());
-            checkpointer.scheduleAtFixedRate(
-                    this::checkpoint,
-                    checkpointInterval.toMillis(),
-                    checkpointInterval.toMillis(),
-                    TimeUnit.MILLISECONDS);
-            if (auditRetention.isPresent()) {
-                // The retention purge rides the checkpointer's single thread as a second task, so the
-                // two lifecycle chores can never overlap and no extra thread is spent on an hourly job.
-                checkpointer.scheduleAtFixedRate(
-                        this::purgeExpiredAuditEvents,
-                        DEFAULT_AUDIT_PURGE_INTERVAL.toMillis(),
-                        DEFAULT_AUDIT_PURGE_INTERVAL.toMillis(),
-                        TimeUnit.MILLISECONDS);
-            }
+            scheduleLifecycleTasks(checkpointer);
         }
         return this;
+    }
+
+    /**
+     * Puts the periodic lifecycle chores on {@code scheduler}: always the checkpoint, plus the audit
+     * purge when retention is configured — no retention, no purge task, and the trail grows unbounded
+     * as before. Package-private so tests can hand in a recording scheduler and verify exactly what
+     * was scheduled (and run it), with no scheduler timing; {@link #start()} hands in the real
+     * checkpointer executor.
+     */
+    void scheduleLifecycleTasks(ScheduledExecutorService scheduler) {
+        scheduler.scheduleAtFixedRate(
+                this::checkpoint, checkpointInterval.toMillis(), checkpointInterval.toMillis(), TimeUnit.MILLISECONDS);
+        if (auditRetention.isPresent()) {
+            scheduler.scheduleAtFixedRate(
+                    this::purgeExpiredAuditEvents,
+                    DEFAULT_AUDIT_PURGE_INTERVAL.toMillis(),
+                    DEFAULT_AUDIT_PURGE_INTERVAL.toMillis(),
+                    TimeUnit.MILLISECONDS);
+        }
     }
 
     /** The bound port; useful when created with port 0 (pick any free port). */

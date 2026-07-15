@@ -31,6 +31,11 @@ import java.util.Objects;
  * itself stays an operational concern of the composition root; neither the core nor the
  * {@code EventSink} port knows it exists.
  *
+ * <p>The bound is honest at the margin, not exact: a row is purged once it is older than the cutoff
+ * and no younger-stamped row precedes it in the trail's insertion order, so the effective retention
+ * upper bound is {@code maxAge + max emitter timestamp skew + one purge period} — milliseconds of
+ * skew and an hour of period against a typically days-long {@code maxAge}.
+ *
  * @param maxAge how much history to keep; events older than {@code now - maxAge} are purged; must be
  *     positive
  * @param purger the mechanism that deletes everything older than a cutoff and reports how many rows
