@@ -21,9 +21,11 @@ import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
@@ -59,10 +61,24 @@ import javax.sql.DataSource;
  * abandoned but <em>counted</em>: it lands in {@link #droppedCount()} like any other loss, never
  * silently. The event&#8594;row translation lives in {@link AuditEventMapper} as pure functions; this
  * class owns only the queue, the writer thread, and the SQL.
+ *
+ * <p><b>Retention trims the oldest tail, nothing else.</b> Left alone the table grows without bound,
+ * so {@link #purgeOlderThan(Instant)} deletes the rows strictly older than a caller-supplied cutoff —
+ * and only those. Surviving rows keep their {@code seq} and their content untouched, so the history
+ * that remains is still the append-only ledger, just shorter at the far end. Purging is an
+ * operational concern of this implementation, not a domain concept, which is why the method lives on
+ * this concrete class and not on the {@link EventSink} port; scheduling it (and the opt-in retention
+ * knob — no knob, no purge, unbounded as before) is the server composition root's business.
  */
 public final class PostgresAuditTrail implements EventSink, AutoCloseable {
 
     static final int DEFAULT_QUEUE_CAPACITY = 1024;
+
+    /**
+     * Rows deleted per purge round. Small enough to keep each round's transaction (and its lock
+     * footprint) modest, large enough that a nightly tail clears in few round-trips.
+     */
+    static final int DEFAULT_PURGE_BATCH_SIZE = 5_000;
 
     /** Upper bound of one drained batch; keeps a single transaction (and its latency) small. */
     private static final int MAX_BATCH_SIZE = 128;
@@ -77,6 +93,30 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
                 until, cause)
             VALUES (?, ?, ?, ?, ?, ?, ?)""";
 
+    /**
+     * The O(1) purge guard: the {@code occurred_at} of the seq-oldest row. The single writer thread
+     * appends in emission order, so seq order is time order — if the head of the ledger is already
+     * fresh, so is everything behind it, and the purge can return without scanning anything. One
+     * primary-key read is all a no-op purge ever costs, which is what lets it run hourly.
+     */
+    private static final String OLDEST_OCCURRED_AT =
+            """
+            SELECT occurred_at FROM audit_event ORDER BY seq LIMIT 1""";
+
+    /**
+     * One purge round: delete the oldest {@code purgeBatchSize} rows still older than the cutoff. The
+     * inner select walks the {@code seq} primary key from the low end — no index on
+     * {@code occurred_at} exists or is needed, because the old rows are exactly the low-seq tail.
+     */
+    private static final String DELETE_OLDEST_TAIL_BATCH =
+            """
+            DELETE FROM audit_event
+            WHERE seq IN (
+                SELECT seq FROM audit_event
+                WHERE occurred_at < ?
+                ORDER BY seq
+                LIMIT ?)""";
+
     /** The seam between the queue/writer machinery and JDBC, so the machinery tests need no database. */
     interface BatchWriter {
         void write(List<PoolEvent> batch);
@@ -86,6 +126,11 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
     private final AtomicLong dropped = new AtomicLong();
     private final Thread writer;
     private final Duration closeTimeout;
+
+    /** Null when built on the {@link BatchWriter} seam — such a trail cannot purge, only append. */
+    private final DataSource dataSource;
+
+    private final int purgeBatchSize;
     private volatile boolean running = true;
 
     // Makes the running-check-and-offer in emit() atomic with close() flipping the flag. Without it,
@@ -112,7 +157,17 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
      * @throws IllegalArgumentException if {@code queueCapacity} is not positive
      */
     public PostgresAuditTrail(DataSource dataSource, int queueCapacity) {
-        this(jdbcWriter(Objects.requireNonNull(dataSource, "dataSource must not be null")), queueCapacity);
+        this(dataSource, queueCapacity, DEFAULT_PURGE_BATCH_SIZE);
+    }
+
+    /** The purge-batch seam: lets tests drive multi-round purges with a handful of rows. */
+    PostgresAuditTrail(DataSource dataSource, int queueCapacity, int purgeBatchSize) {
+        this(
+                jdbcWriter(Objects.requireNonNull(dataSource, "dataSource must not be null")),
+                dataSource,
+                queueCapacity,
+                purgeBatchSize,
+                DEFAULT_CLOSE_TIMEOUT);
     }
 
     PostgresAuditTrail(BatchWriter batchWriter, int queueCapacity) {
@@ -120,10 +175,24 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
     }
 
     PostgresAuditTrail(BatchWriter batchWriter, int queueCapacity, Duration closeTimeout) {
+        this(batchWriter, null, queueCapacity, DEFAULT_PURGE_BATCH_SIZE, closeTimeout);
+    }
+
+    private PostgresAuditTrail(
+            BatchWriter batchWriter,
+            DataSource dataSource,
+            int queueCapacity,
+            int purgeBatchSize,
+            Duration closeTimeout) {
         Objects.requireNonNull(batchWriter, "batchWriter must not be null");
         if (queueCapacity <= 0) {
             throw new IllegalArgumentException("queueCapacity must be positive");
         }
+        if (purgeBatchSize <= 0) {
+            throw new IllegalArgumentException("purgeBatchSize must be positive");
+        }
+        this.dataSource = dataSource;
+        this.purgeBatchSize = purgeBatchSize;
         this.closeTimeout = Objects.requireNonNull(closeTimeout, "closeTimeout must not be null");
         this.queue = new ArrayBlockingQueue<>(queueCapacity);
         this.writer = Thread.ofPlatform()
@@ -150,6 +219,70 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
      */
     public long droppedCount() {
         return dropped.get();
+    }
+
+    /**
+     * Deletes every row whose {@code occurred_at} is strictly older than {@code cutoff} — the
+     * age-based retention that bounds the trail. Only the oldest tail of the ledger is trimmed:
+     * surviving rows keep their {@code seq} and their content byte-for-byte, so what remains is still
+     * the same append-only history. Emits arriving while a purge runs are unaffected — the writer
+     * appends fresh, above-cutoff rows at the high end of {@code seq} while the delete works the low
+     * end.
+     *
+     * <p>Cheap by construction, with no new index and no schema change. An O(1) guard reads the
+     * seq-oldest row first (the single writer makes seq order time order, so a fresh head means a
+     * fresh table) and returns without deleting when there is nothing old. Otherwise rows are deleted
+     * oldest-first in batches over the {@code seq} primary key, each round its own transaction, so a
+     * huge backlog never turns into one huge lock-holding delete.
+     *
+     * <p>Callers decide the policy; this method is only the mechanism. In production the server's
+     * composition root schedules it with a cutoff of {@code clock.instant() - retention} — and when no
+     * retention is configured, never calls it at all, preserving the original unbounded behavior.
+     *
+     * @param cutoff rows strictly older than this instant are deleted; never null
+     * @return how many rows were deleted, summed across all rounds
+     * @throws IllegalStateException if this trail was built on the {@link BatchWriter} seam and has no
+     *     database to purge
+     * @throws PersistenceException if the guard read or a delete round fails
+     */
+    public long purgeOlderThan(Instant cutoff) {
+        Objects.requireNonNull(cutoff, "cutoff must not be null");
+        if (dataSource == null) {
+            throw new IllegalStateException("this trail has no DataSource to purge; it was built on the"
+                    + " BatchWriter seam for machinery tests");
+        }
+        long cutoffNanos = SnapshotMapper.instantToEpochNanos(cutoff);
+        try (Connection connection = dataSource.getConnection()) {
+            // Auto-commit on purpose: the guard and every delete round are each their own transaction.
+            connection.setAutoCommit(true);
+            if (oldestRowIsFresh(connection, cutoffNanos)) {
+                return 0;
+            }
+            long total = 0;
+            int deletedInRound;
+            do {
+                deletedInRound = deleteOldestTailBatch(connection, cutoffNanos);
+                total += deletedInRound;
+            } while (deletedInRound == purgeBatchSize);
+            return total;
+        } catch (SQLException e) {
+            throw new PersistenceException("failed to purge audit events older than " + cutoff, e);
+        }
+    }
+
+    private static boolean oldestRowIsFresh(Connection connection, long cutoffNanos) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(OLDEST_OCCURRED_AT);
+                ResultSet resultSet = statement.executeQuery()) {
+            return !resultSet.next() || resultSet.getLong(1) >= cutoffNanos;
+        }
+    }
+
+    private int deleteOldestTailBatch(Connection connection, long cutoffNanos) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(DELETE_OLDEST_TAIL_BATCH)) {
+            statement.setLong(1, cutoffNanos);
+            statement.setInt(2, purgeBatchSize);
+            return statement.executeUpdate();
+        }
     }
 
     /**

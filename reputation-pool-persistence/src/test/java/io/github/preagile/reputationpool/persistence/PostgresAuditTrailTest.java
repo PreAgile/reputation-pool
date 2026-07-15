@@ -44,6 +44,7 @@ import java.util.stream.IntStream;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.postgresql.ds.PGSimpleDataSource;
 
 /**
  * Behavior specification for {@link PostgresAuditTrail}, database-free via the
@@ -382,6 +383,38 @@ class PostgresAuditTrailTest {
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("queueCapacity");
         assertThatThrownBy(() -> new PostgresAuditTrail(noop, -1)).isInstanceOf(IllegalArgumentException.class);
+    }
+
+    private static PostgresAuditTrail.BatchWriter noopWriter() {
+        return batch -> {};
+    }
+
+    @Test
+    @DisplayName("purgeOlderThan needs the database: a trail built on the BatchWriter seam refuses it"
+            + " loudly instead of silently purging nothing")
+    void purgeRequiresADataSourceBackedTrail() {
+        try (PostgresAuditTrail trail = new PostgresAuditTrail(noopWriter(), 4)) {
+            assertThatThrownBy(() -> trail.purgeOlderThan(AT)).isInstanceOf(IllegalStateException.class);
+        }
+    }
+
+    @Test
+    @DisplayName("purgeOlderThan rejects a null cutoff before touching anything")
+    void purgeRejectsNullCutoff() {
+        try (PostgresAuditTrail trail = new PostgresAuditTrail(noopWriter(), 4)) {
+            assertThatThrownBy(() -> trail.purgeOlderThan(null)).isInstanceOf(NullPointerException.class);
+        }
+    }
+
+    @Test
+    @DisplayName("a non-positive purge batch size is rejected at construction")
+    void rejectsNonPositivePurgeBatchSize() {
+        PGSimpleDataSource dataSource = new PGSimpleDataSource();
+        assertThatThrownBy(() -> new PostgresAuditTrail(dataSource, 4, 0))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("purgeBatchSize");
+        assertThatThrownBy(() -> new PostgresAuditTrail(dataSource, 4, -1))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     private static void await(CountDownLatch latch) {
