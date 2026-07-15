@@ -1,6 +1,7 @@
-# Mutation testing as a scheduled quality probe (#27). PIT proves the tests have teeth —
-# a surviving mutant is an assertion that never fires. It is far too slow for the PR gate,
-# so it runs nightly (and on demand) instead of never.
+# Mutation testing as a scheduled quality probe (#27, extended per-module in #45). PIT proves the
+# tests have teeth — a surviving mutant is an assertion that never fires. It is far too slow for the
+# PR gate, so it runs nightly (and on demand) instead of never. Each module carries its own
+# no-regression ratchet (maxSurviving): the task fails when survivors exceed the recorded baseline.
 name: Mutation Testing
 
 on:
@@ -10,8 +11,12 @@ on:
 
 jobs:
   pitest:
-    name: PIT (core)
+    name: PIT (${{ matrix.module }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [core, persistence, server, adapters]
     steps:
       - uses: actions/checkout@v7
 
@@ -25,12 +30,12 @@ jobs:
         uses: gradle/actions/setup-gradle@v6
 
       - name: Run PIT mutation testing
-        run: ./gradlew :reputation-pool-core:pitest --no-daemon
+        run: ./gradlew :reputation-pool-${{ matrix.module }}:pitest --no-daemon
 
       - name: Upload mutation report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: pitest-report
-          path: reputation-pool-core/build/reports/pitest/
+          name: pitest-report-${{ matrix.module }}
+          path: reputation-pool-${{ matrix.module }}/build/reports/pitest/
           if-no-files-found: ignore
