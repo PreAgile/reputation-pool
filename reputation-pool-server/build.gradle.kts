@@ -99,6 +99,18 @@ pitest {
     maxSurviving = 0
 }
 
+tasks.withType<Javadoc>().configureEach {
+    (options as StandardJavadocDocletOptions).addBooleanOption("Xdoclint:all,-missing", true)
+    // Generated protobuf/gRPC sources are not ours to document — lint only the handwritten code.
+    exclude("io/github/preagile/reputationpool/grpc/**")
+}
+
+// Make Javadoc part of the build gate, as in the other modules, so a broken doc reference fails the
+// build.
+tasks.named("check") {
+    dependsOn(tasks.named("javadoc"))
+}
+
 spotless {
     java {
         // Only our hand-written sources — the generated protobuf/gRPC code lives under build/ and is
