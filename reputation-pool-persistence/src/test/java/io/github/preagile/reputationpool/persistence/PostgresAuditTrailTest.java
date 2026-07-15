@@ -407,14 +407,13 @@ class PostgresAuditTrailTest {
     }
 
     @Test
-    @DisplayName("a non-positive purge batch size is rejected at construction")
-    void rejectsNonPositivePurgeBatchSize() {
+    @DisplayName("a non-positive purge batch size is rejected at construction, and the message names"
+            + " the knob (the whole non-positive space is attacked in PostgresAuditTrailPropertyTest)")
+    void rejectsNonPositivePurgeBatchSizeWithATellingMessage() {
         PGSimpleDataSource dataSource = new PGSimpleDataSource();
         assertThatThrownBy(() -> new PostgresAuditTrail(dataSource, 4, 0))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("purgeBatchSize");
-        assertThatThrownBy(() -> new PostgresAuditTrail(dataSource, 4, -1))
-                .isInstanceOf(IllegalArgumentException.class);
     }
 
     private static void await(CountDownLatch latch) {
