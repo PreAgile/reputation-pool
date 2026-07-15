@@ -55,14 +55,21 @@ jobs:
   # contract; buf breaking diffs it against main and fails on any backward-incompatible
   # change (deleted field, reused number, changed type) that the jqwik round-trips cannot
   # see — they prove the current proto maps to the domain, not that it stays wire-compatible
-  # with what was released.
+  # with the contract already on main.
   proto-contract:
     name: Proto breaking-change check
     runs-on: ubuntu-latest
     steps:
+      # Read-only job: the breaking check fetches the baseline over a public HTTPS git URL,
+      # so the checkout token does not need to linger in git config afterwards.
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - uses: bufbuild/buf-action@v1
         with:
+          # Pin the CLI so the check is reproducible and a new buf release cannot change the
+          # verdict without a commit here. Matches the version the guard was validated against.
+          version: 1.71.0
           breaking: true
           # subdir pins the module root so file paths match on both sides. It also keeps this
           # bootstrap PR green: main has no buf.yaml yet, so a plain ref would read the proto at

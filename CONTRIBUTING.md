@@ -68,5 +68,6 @@ merge closes it. Fill in the PR template checklist. CI and CodeRabbit run automa
 review comments before merge.
 
 Changes to `advisor.proto` must pass the `buf breaking` check in CI: the wire contract stays
-backward-compatible with what was released. An intentional breaking change goes into a new major
-package (e.g. `...grpc.v2`) instead of editing the `v1` shapes.
+backward-compatible with the shape already on `main` (the comparison source switches to release
+tags once the server ships versioned releases). An intentional breaking change goes into a new
+major package (e.g. `...grpc.v2`) instead of editing the `v1` shapes.
