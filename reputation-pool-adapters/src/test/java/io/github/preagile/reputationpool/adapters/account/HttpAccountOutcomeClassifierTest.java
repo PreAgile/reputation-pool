@@ -54,6 +54,21 @@ class HttpAccountOutcomeClassifierTest {
     }
 
     @Test
+    void theTwoXxRangeEdgesAreExact() {
+        // The success window is [200, 300): 200 and 299 are inside and classify by latency alone;
+        // 199 and 300 are one outside and are reputational failures, never Success/SLOW. Pinned as
+        // examples so the boundary does not depend on the property generator drawing the edge.
+        assertThat(((AccountProbe.Reputational) classifier.classifyResponse(200, Duration.ofMillis(10))).outcome())
+                .isInstanceOf(Outcome.Success.class);
+        assertThat(((AccountProbe.Reputational) classifier.classifyResponse(299, Duration.ofMillis(10))).outcome())
+                .isInstanceOf(Outcome.Success.class);
+        assertThat(failureTypeOf(classifier.classifyResponse(199, Duration.ofMillis(10))))
+                .isEqualTo(FailureType.CONNECTION_RESET);
+        assertThat(failureTypeOf(classifier.classifyResponse(300, Duration.ofMillis(10))))
+                .isEqualTo(FailureType.CONNECTION_RESET);
+    }
+
+    @Test
     void aRateLimitIsAReputationalBlockedFailure() {
         var probe = classifier.classifyResponse(429, Duration.ofMillis(10));
         assertThat(failureTypeOf(probe)).isEqualTo(FailureType.BLOCKED);

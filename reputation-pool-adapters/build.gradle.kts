@@ -1,6 +1,8 @@
 plugins {
     `java-library`
     id("com.diffplug.spotless")
+    // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
+    id("info.solidsoft.pitest") version "1.19.0"
 }
 
 java {
@@ -34,6 +36,9 @@ dependencies {
     testImplementation("org.wiremock:wiremock:3.13.2")
     // A no-op SLF4J provider so the logging EventSink under test prints nothing and no NOP warning fires.
     testRuntimeOnly("org.slf4j:slf4j-nop:2.0.18")
+
+    // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik), same version as core.
+    pitest("org.pitest:pitest-junit5-plugin:1.2.3")
 }
 
 tasks.test {
@@ -41,6 +46,29 @@ tasks.test {
     testLogging {
         events("failed", "skipped")
     }
+}
+
+// PIT targets only the pure HTTP-outcome classifiers. The probing/wiring (AccountProbe,
+// Slf4jEventSink) is excluded: its mutants cannot be killed without a live HTTP endpoint
+// (WireMock). `targetTests` pins the classifier tests.
+pitest {
+    pitestVersion = "1.25.5"
+    junit5PluginVersion = "1.2.3"
+    targetClasses =
+        setOf(
+            "io.github.preagile.reputationpool.adapters.proxy.HttpProxyOutcomeClassifier",
+            "io.github.preagile.reputationpool.adapters.account.HttpAccountOutcomeClassifier")
+    targetTests =
+        setOf(
+            "io.github.preagile.reputationpool.adapters.proxy.HttpProxyOutcomeClassifier*Test",
+            "io.github.preagile.reputationpool.adapters.account.HttpAccountOutcomeClassifier*Test")
+    threads = 4
+    timestampedReports = false
+    // Measured baseline: 7 surviving mutants (43/50 killed), stable across repeated runs since the
+    // 2xx edge examples pinned the status-code boundary. The rest are boundary/equivalent mutants
+    // (latency exactly at the slow threshold, the unwrapAsync depth cap) plus the unread
+    // slowThreshold() accessors. Tighten only, never raise.
+    maxSurviving = 7
 }
 
 tasks.withType<Javadoc>().configureEach {

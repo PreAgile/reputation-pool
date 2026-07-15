@@ -215,6 +215,19 @@ class ProtoMappingTest {
     }
 
     @Test
+    void theExactTimestampRangeEndpointsRoundTrip() {
+        // google.protobuf.Timestamp's documented range endpoints — 0001-01-01T00:00:00Z and
+        // 9999-12-31T23:59:59.999999999Z — are valid values, not rejections: the guard must be
+        // exclusive strictly outside them. Pinned as an example so the boundary does not depend on
+        // the property generator drawing the exact extremes.
+        Instant min = Instant.parse("0001-01-01T00:00:00Z");
+        Instant max = Instant.parse("9999-12-31T23:59:59.999999999Z");
+        Lease lease = new Lease(new ResourceId(ResourceKind.PROXY, "p1"), new Context("m"), 1L, min, max);
+
+        assertThat(ProtoMapping.toDomain(ProtoMapping.toProto(lease))).isEqualTo(lease);
+    }
+
+    @Test
     void anInstantOutsideTheTimestampRangeIsRejectedLoudly() {
         // The range guard backstops the remaining protoTimestamp call sites (lease, cooldown),
         // where the core only ever produces finite instants; a future violation must not be silent.

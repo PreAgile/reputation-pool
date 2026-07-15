@@ -5,6 +5,8 @@ plugins {
     id("com.diffplug.spotless")
     // Generates the protobuf message classes and the gRPC service stubs from src/main/proto.
     id("com.google.protobuf") version "0.10.0"
+    // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
+    id("info.solidsoft.pitest") version "1.19.0"
 }
 
 java {
@@ -52,6 +54,9 @@ dependencies {
     testImplementation("org.assertj:assertj-core:3.27.7")
     // Shared test helpers from core (SettableClock) instead of per-module copies.
     testImplementation(testFixtures(project(":reputation-pool-core")))
+
+    // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik), same version as core.
+    pitest("org.pitest:pitest-junit5-plugin:1.2.3")
 }
 
 protobuf {
@@ -77,6 +82,21 @@ tasks.test {
     testLogging {
         events("failed", "skipped")
     }
+}
+
+// PIT targets only the pure proto<->domain mapper (ProtoMapping). The gRPC wiring (AdvisorServer,
+// EventBroadcaster, ReputationAdvisorService) is excluded: its mutants cannot be killed without a
+// live transport. `targetTests` pins the mapper's tests.
+pitest {
+    pitestVersion = "1.25.5"
+    junit5PluginVersion = "1.2.3"
+    targetClasses = setOf("io.github.preagile.reputationpool.server.ProtoMapping")
+    targetTests = setOf("io.github.preagile.reputationpool.server.ProtoMapping*Test")
+    threads = 4
+    timestampedReports = false
+    // Measured baseline: 0 surviving mutants (25/25 killed), stable across repeated runs since the
+    // Timestamp range-endpoint example pinned the guard's boundaries. Tighten only, never raise.
+    maxSurviving = 0
 }
 
 spotless {

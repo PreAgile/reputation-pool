@@ -1,6 +1,8 @@
 plugins {
     `java-library`
     id("com.diffplug.spotless")
+    // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
+    id("info.solidsoft.pitest") version "1.19.0"
 }
 
 java {
@@ -49,6 +51,9 @@ dependencies {
     // Integration-test only: a real PostgreSQL via Testcontainers, migrated by Flyway.
     "integrationTestImplementation"("org.testcontainers:postgresql:1.21.4")
     "integrationTestImplementation"("org.testcontainers:junit-jupiter:1.21.4")
+
+    // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik), same version as core.
+    pitest("org.pitest:pitest-junit5-plugin:1.2.3")
 }
 
 tasks.test {
@@ -71,6 +76,26 @@ val integrationTestTask =
             events("failed", "skipped")
         }
     }
+
+// PIT targets only the pure row<->domain mappers. The JDBC wiring (PostgresResourceStore,
+// PostgresAuditTrail) is excluded: its mutants cannot be killed without a live database
+// (Testcontainers). `targetTests` pins the mapper tests so the probe stays Docker-free.
+pitest {
+    pitestVersion = "1.25.5"
+    junit5PluginVersion = "1.2.3"
+    targetClasses =
+        setOf(
+            "io.github.preagile.reputationpool.persistence.SnapshotMapper",
+            "io.github.preagile.reputationpool.persistence.AuditEventMapper")
+    targetTests =
+        setOf(
+            "io.github.preagile.reputationpool.persistence.SnapshotMapper*Test",
+            "io.github.preagile.reputationpool.persistence.AuditEventMapper*Test")
+    threads = 4
+    timestampedReports = false
+    // Measured baseline: 0 surviving mutants (11/11 killed), stable across repeated runs. Tighten only.
+    maxSurviving = 0
+}
 
 tasks.withType<Javadoc>().configureEach {
     (options as StandardJavadocDocletOptions).addBooleanOption("Xdoclint:all,-missing", true)
