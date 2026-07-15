@@ -1,6 +1,9 @@
 plugins {
     `java-library`
     id("com.diffplug.spotless")
+    // On-demand mutation testing via `./gradlew :reputation-pool-persistence:pitest`. Same 1.19.0 as
+    // core (first release supporting Gradle 9.x); deliberately NOT wired into `build` or the PR gate.
+    id("info.solidsoft.pitest") version "1.19.0"
 }
 
 java {
@@ -49,6 +52,9 @@ dependencies {
     // Integration-test only: a real PostgreSQL via Testcontainers, migrated by Flyway.
     "integrationTestImplementation"("org.testcontainers:postgresql:1.21.4")
     "integrationTestImplementation"("org.testcontainers:junit-jupiter:1.21.4")
+
+    // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik), same version as core.
+    pitest("org.pitest:pitest-junit5-plugin:1.2.3")
 }
 
 tasks.test {
@@ -71,6 +77,30 @@ val integrationTestTask =
             events("failed", "skipped")
         }
     }
+
+// Mutation testing is an on-demand quality probe (`./gradlew :reputation-pool-persistence:pitest`),
+// never part of `build`/CI. It targets ONLY the pure row<->domain mappers — the mapping-heavy code a
+// round-trip suite can silently under-test. The gRPC/JDBC wiring (PostgresResourceStore,
+// PostgresAuditTrail) is deliberately excluded: its mutants cannot be killed without a live database
+// (Testcontainers), so they would be noise, not signal. `targetTests` is pinned to the mapper tests so
+// the probe stays Docker-free and fast. `maxSurviving` is a no-regression ratchet, not a percentage:
+// the task fails when survivors exceed the recorded baseline. Tightening it is a manual PR edit.
+pitest {
+    pitestVersion = "1.25.5"
+    junit5PluginVersion = "1.2.3"
+    targetClasses =
+        setOf(
+            "io.github.preagile.reputationpool.persistence.SnapshotMapper",
+            "io.github.preagile.reputationpool.persistence.AuditEventMapper")
+    targetTests =
+        setOf(
+            "io.github.preagile.reputationpool.persistence.SnapshotMapper*Test",
+            "io.github.preagile.reputationpool.persistence.AuditEventMapper*Test")
+    threads = 4
+    timestampedReports = false
+    // Measured baseline: 0 surviving mutants (11/11 killed), stable across repeated runs. Tighten only.
+    maxSurviving = 0
+}
 
 tasks.withType<Javadoc>().configureEach {
     (options as StandardJavadocDocletOptions).addBooleanOption("Xdoclint:all,-missing", true)

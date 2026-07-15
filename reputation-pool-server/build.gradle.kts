@@ -5,6 +5,9 @@ plugins {
     id("com.diffplug.spotless")
     // Generates the protobuf message classes and the gRPC service stubs from src/main/proto.
     id("com.google.protobuf") version "0.10.0"
+    // On-demand mutation testing via `./gradlew :reputation-pool-server:pitest`. Same 1.19.0 as core;
+    // deliberately NOT wired into `build` or the PR gate.
+    id("info.solidsoft.pitest") version "1.19.0"
 }
 
 java {
@@ -52,6 +55,9 @@ dependencies {
     testImplementation("org.assertj:assertj-core:3.27.7")
     // Shared test helpers from core (SettableClock) instead of per-module copies.
     testImplementation(testFixtures(project(":reputation-pool-core")))
+
+    // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik), same version as core.
+    pitest("org.pitest:pitest-junit5-plugin:1.2.3")
 }
 
 protobuf {
@@ -77,6 +83,26 @@ tasks.test {
     testLogging {
         events("failed", "skipped")
     }
+}
+
+// Mutation testing is an on-demand quality probe (`./gradlew :reputation-pool-server:pitest`), never
+// part of `build`/CI. It targets ONLY the pure proto<->domain mapper (ProtoMapping) — the transform
+// code a round-trip suite can silently under-test. The gRPC wiring (AdvisorServer, EventBroadcaster,
+// ReputationAdvisorService) is deliberately excluded: its mutants cannot be killed without a live
+// transport, so they would be noise, not signal. `targetTests` is pinned to the mapper's tests.
+// `maxSurviving` is a no-regression ratchet, not a percentage: the task fails when survivors exceed the
+// recorded baseline. Tightening it is a manual PR edit.
+pitest {
+    pitestVersion = "1.25.5"
+    junit5PluginVersion = "1.2.3"
+    targetClasses = setOf("io.github.preagile.reputationpool.server.ProtoMapping")
+    targetTests = setOf("io.github.preagile.reputationpool.server.ProtoMapping*Test")
+    threads = 4
+    timestampedReports = false
+    // Measured baseline: 2 surviving mutants (23/25 killed), stable across repeated runs. They are the
+    // two conditional-boundary mutants on the Timestamp range guard (year 0001 / 9999 edges), which the
+    // round-trip properties do not pin at the exact extremes. Tighten only.
+    maxSurviving = 2
 }
 
 spotless {

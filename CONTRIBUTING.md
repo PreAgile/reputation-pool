@@ -42,6 +42,9 @@ they are enforced by the build and by review.
   happy-path example.
 - New concurrent paths need a **multi-thread** test that reproduces real contention.
 - Do not write tests that assert nothing meaningful.
+- **Mutation testing** (`./gradlew :<module>:pitest`, nightly/on-demand only) is a no-regression
+  ratchet: surviving mutants must not exceed each module's `maxSurviving`, and when better tests lower
+  the count you tighten `maxSurviving` in the same PR — never raise it to make a change pass.
 
 ## Comments
 

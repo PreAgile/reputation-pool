@@ -1,6 +1,9 @@
 plugins {
     `java-library`
     id("com.diffplug.spotless")
+    // On-demand mutation testing via `./gradlew :reputation-pool-adapters:pitest`. Same 1.19.0 as core;
+    // deliberately NOT wired into `build` or the PR gate.
+    id("info.solidsoft.pitest") version "1.19.0"
 }
 
 java {
@@ -34,6 +37,9 @@ dependencies {
     testImplementation("org.wiremock:wiremock:3.13.2")
     // A no-op SLF4J provider so the logging EventSink under test prints nothing and no NOP warning fires.
     testRuntimeOnly("org.slf4j:slf4j-nop:2.0.18")
+
+    // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik), same version as core.
+    pitest("org.pitest:pitest-junit5-plugin:1.2.3")
 }
 
 tasks.test {
@@ -41,6 +47,34 @@ tasks.test {
     testLogging {
         events("failed", "skipped")
     }
+}
+
+// Mutation testing is an on-demand quality probe (`./gradlew :reputation-pool-adapters:pitest`), never
+// part of `build`/CI. It targets ONLY the pure HTTP-outcome classifiers — the branch-heavy transform
+// code a totality suite can silently under-test. The probing/wiring (HttpProxyEndpoint, AccountProbe,
+// Slf4jEventSink) is deliberately excluded: its mutants cannot be killed without a live HTTP endpoint
+// (WireMock), so they would be noise, not signal. `targetTests` is pinned to the classifier tests.
+// `maxSurviving` is a no-regression ratchet, not a percentage: the task fails when survivors exceed the
+// recorded baseline. Tightening it is a manual PR edit.
+pitest {
+    pitestVersion = "1.25.5"
+    junit5PluginVersion = "1.2.3"
+    targetClasses =
+        setOf(
+            "io.github.preagile.reputationpool.adapters.proxy.HttpProxyOutcomeClassifier",
+            "io.github.preagile.reputationpool.adapters.account.HttpAccountOutcomeClassifier")
+    targetTests =
+        setOf(
+            "io.github.preagile.reputationpool.adapters.proxy.HttpProxyOutcomeClassifier*Test",
+            "io.github.preagile.reputationpool.adapters.account.HttpAccountOutcomeClassifier*Test")
+    threads = 4
+    timestampedReports = false
+    // Measured baseline: 8-9 surviving mutants (killed 41-42 of 50). The count jitters by one because
+    // the jqwik totality properties draw a random seed each run: the `statusCode < 300` boundary mutant
+    // is killed only when a run happens to generate the exact edge (status 300), so it sometimes
+    // survives. The cap is set at the observed ceiling (9) so generator jitter never trips a false
+    // regression; a real gap adds always-surviving mutants that push past it. Tighten only.
+    maxSurviving = 9
 }
 
 tasks.withType<Javadoc>().configureEach {
