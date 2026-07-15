@@ -48,3 +48,30 @@ jobs:
           name: test-reports
           path: '**/build/reports/tests/'
           if-no-files-found: ignore
+
+  # A separate gate from the Gradle build on purpose: the proto contract is a different
+  # responsibility (wire compatibility, not code correctness) and this fails in seconds
+  # without waiting on the JDK toolchain, tests, or Docker. advisor.proto is a public
+  # contract; buf breaking diffs it against main and fails on any backward-incompatible
+  # change (deleted field, reused number, changed type) that the jqwik round-trips cannot
+  # see — they prove the current proto maps to the domain, not that it stays wire-compatible
+  # with what was released.
+  proto-contract:
+    name: Proto breaking-change check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: bufbuild/buf-action@v1
+        with:
+          breaking: true
+          # subdir pins the module root so file paths match on both sides. It also keeps this
+          # bootstrap PR green: main has no buf.yaml yet, so a plain ref would read the proto at
+          # its full repo path and report a spurious "file deleted". Switch the ref to release
+          # tags once the server ships versioned releases.
+          breaking_against: https://github.com/${{ github.repository }}.git#branch=main,subdir=reputation-pool-server/src/main/proto
+          # This job guards the contract only: lint/format would flag pre-existing style the issue
+          # deliberately leaves alone, push needs a BSR token, and the PR comment needs write scope.
+          lint: false
+          format: false
+          push: false
+          pr_comment: false

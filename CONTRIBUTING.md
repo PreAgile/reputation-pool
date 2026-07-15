@@ -66,3 +66,7 @@ Projects boards; the README roadmap and milestones are the planning surface.
 Open PRs against `main`. Reference the issue the PR resolves with `Closes #N` in the body so the
 merge closes it. Fill in the PR template checklist. CI and CodeRabbit run automatically; address
 review comments before merge.
+
+Changes to `advisor.proto` must pass the `buf breaking` check in CI: the wire contract stays
+backward-compatible with what was released. An intentional breaking change goes into a new major
+package (e.g. `...grpc.v2`) instead of editing the `v1` shapes.
