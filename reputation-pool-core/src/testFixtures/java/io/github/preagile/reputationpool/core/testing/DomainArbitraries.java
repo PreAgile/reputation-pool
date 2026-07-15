@@ -153,10 +153,14 @@ public final class DomainArbitraries {
      * sentinel weighted in next to finite expiries.
      */
     public static Arbitrary<Blocklist> blocklists() {
-        Arbitrary<Instant> untils = Arbitraries.frequencyOf(
+        return Arbitraries.maps(resourceIds(), blocklistUntils()).ofMaxSize(6).map(Blocklist::new);
+    }
+
+    /** Blocklist expiries: finite instants with the {@link Instant#MAX} never-expires sentinel weighted in. */
+    public static Arbitrary<Instant> blocklistUntils() {
+        return Arbitraries.frequencyOf(
                 Tuple.of(3, Arbitraries.just(Instant.MAX)), // the never-expires sentinel
                 Tuple.of(7, instants()));
-        return Arbitraries.maps(resourceIds(), untils).ofMaxSize(6).map(Blocklist::new);
     }
 
     /**

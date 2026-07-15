@@ -113,11 +113,9 @@ class SnapshotMapperPropertyTest {
 
     @Provide
     Arbitrary<Instant> blocklistUntils() {
-        // reuse the shared blocklist generator so the Instant.MAX weighting stays in one place
-        return DomainArbitraries.blocklists()
-                .map(blocklist -> blocklist.entries().values().stream().findFirst())
-                .filter(java.util.Optional::isPresent)
-                .map(java.util.Optional::get);
+        // the shared expiry generator directly: the Instant.MAX weighting stays in one place, and
+        // consuming it as a primitive (not extracted from an aggregate) keeps shrinking clean
+        return DomainArbitraries.blocklistUntils();
     }
 
     @Provide
