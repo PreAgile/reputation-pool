@@ -1,8 +1,7 @@
 plugins {
     `java-library`
     id("com.diffplug.spotless")
-    // On-demand mutation testing via `./gradlew :reputation-pool-persistence:pitest`. Same 1.19.0 as
-    // core (first release supporting Gradle 9.x); deliberately NOT wired into `build` or the PR gate.
+    // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
     id("info.solidsoft.pitest") version "1.19.0"
 }
 
@@ -78,13 +77,9 @@ val integrationTestTask =
         }
     }
 
-// Mutation testing is an on-demand quality probe (`./gradlew :reputation-pool-persistence:pitest`),
-// never part of `build`/CI. It targets ONLY the pure row<->domain mappers — the mapping-heavy code a
-// round-trip suite can silently under-test. The gRPC/JDBC wiring (PostgresResourceStore,
-// PostgresAuditTrail) is deliberately excluded: its mutants cannot be killed without a live database
-// (Testcontainers), so they would be noise, not signal. `targetTests` is pinned to the mapper tests so
-// the probe stays Docker-free and fast. `maxSurviving` is a no-regression ratchet, not a percentage:
-// the task fails when survivors exceed the recorded baseline. Tightening it is a manual PR edit.
+// PIT targets only the pure row<->domain mappers. The JDBC wiring (PostgresResourceStore,
+// PostgresAuditTrail) is excluded: its mutants cannot be killed without a live database
+// (Testcontainers). `targetTests` pins the mapper tests so the probe stays Docker-free.
 pitest {
     pitestVersion = "1.25.5"
     junit5PluginVersion = "1.2.3"

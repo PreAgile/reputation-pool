@@ -1,8 +1,7 @@
 plugins {
     `java-library`
     id("com.diffplug.spotless")
-    // On-demand mutation testing via `./gradlew :reputation-pool-adapters:pitest`. Same 1.19.0 as core;
-    // deliberately NOT wired into `build` or the PR gate.
+    // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
     id("info.solidsoft.pitest") version "1.19.0"
 }
 
@@ -49,13 +48,9 @@ tasks.test {
     }
 }
 
-// Mutation testing is an on-demand quality probe (`./gradlew :reputation-pool-adapters:pitest`), never
-// part of `build`/CI. It targets ONLY the pure HTTP-outcome classifiers — the branch-heavy transform
-// code a totality suite can silently under-test. The probing/wiring (HttpProxyEndpoint, AccountProbe,
-// Slf4jEventSink) is deliberately excluded: its mutants cannot be killed without a live HTTP endpoint
-// (WireMock), so they would be noise, not signal. `targetTests` is pinned to the classifier tests.
-// `maxSurviving` is a no-regression ratchet, not a percentage: the task fails when survivors exceed the
-// recorded baseline. Tightening it is a manual PR edit.
+// PIT targets only the pure HTTP-outcome classifiers. The probing/wiring (AccountProbe,
+// Slf4jEventSink) is excluded: its mutants cannot be killed without a live HTTP endpoint
+// (WireMock). `targetTests` pins the classifier tests.
 pitest {
     pitestVersion = "1.25.5"
     junit5PluginVersion = "1.2.3"
@@ -69,12 +64,11 @@ pitest {
             "io.github.preagile.reputationpool.adapters.account.HttpAccountOutcomeClassifier*Test")
     threads = 4
     timestampedReports = false
-    // Measured baseline: 8-9 surviving mutants (killed 41-42 of 50). The count jitters by one because
-    // the jqwik totality properties draw a random seed each run: the `statusCode < 300` boundary mutant
-    // is killed only when a run happens to generate the exact edge (status 300), so it sometimes
-    // survives. The cap is set at the observed ceiling (9) so generator jitter never trips a false
-    // regression; a real gap adds always-surviving mutants that push past it. Tighten only.
-    maxSurviving = 9
+    // Measured baseline: 7 surviving mutants (43/50 killed), stable across repeated runs since the
+    // 2xx edge examples pinned the status-code boundary. The rest are boundary/equivalent mutants
+    // (latency exactly at the slow threshold, the unwrapAsync depth cap) plus the unread
+    // slowThreshold() accessors. Tighten only, never raise.
+    maxSurviving = 7
 }
 
 tasks.withType<Javadoc>().configureEach {

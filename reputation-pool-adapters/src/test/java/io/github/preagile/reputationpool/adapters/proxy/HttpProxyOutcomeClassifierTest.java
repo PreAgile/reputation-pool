@@ -52,6 +52,17 @@ class HttpProxyOutcomeClassifierTest {
     }
 
     @Test
+    void theTwoXxRangeEdgesAreExact() {
+        // The success window is [200, 300): 200 and 299 are inside and classify by latency alone;
+        // 199 and 300 are one outside and are failures, never Success/SLOW. Pinned as examples so
+        // the boundary does not depend on the property generator happening to draw the edge.
+        assertThat(classifier.classifyResponse(200, FAST)).isInstanceOf(Outcome.Success.class);
+        assertThat(classifier.classifyResponse(299, FAST)).isInstanceOf(Outcome.Success.class);
+        assertThat(failureType(classifier.classifyResponse(199, FAST))).isEqualTo(FailureType.CONNECTION_RESET);
+        assertThat(failureType(classifier.classifyResponse(300, FAST))).isEqualTo(FailureType.CONNECTION_RESET);
+    }
+
+    @Test
     void blockSignalsAreBlocked() {
         for (int status : new int[] {401, 403, 407, 429}) {
             assertThat(failureType(classifier.classifyResponse(status, FAST)))

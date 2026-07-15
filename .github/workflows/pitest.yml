@@ -1,7 +1,5 @@
-# Mutation testing as a scheduled quality probe (#27, extended per-module in #45). PIT proves the
-# tests have teeth — a surviving mutant is an assertion that never fires. It is far too slow for the
-# PR gate, so it runs nightly (and on demand) instead of never. Each module carries its own
-# no-regression ratchet (maxSurviving): the task fails when survivors exceed the recorded baseline.
+# Mutation testing as a scheduled quality probe (#27, per-module matrix since #45). Too slow for
+# the PR gate, so it runs nightly and on demand. Ratchet policy: CONTRIBUTING.md.
 name: Mutation Testing
 
 on:
