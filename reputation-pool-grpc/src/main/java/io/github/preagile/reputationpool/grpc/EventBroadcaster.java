@@ -99,10 +99,13 @@ public final class EventBroadcaster implements EventSink {
     /** Completes every open stream; invoked on host shutdown so clients see an orderly end. */
     public synchronized void close() {
         closed = true;
+        // Clear once rather than remove-per-element: subscribers is a CopyOnWriteArrayList, so an
+        // in-loop remove copies the whole backing array each time (O(n^2)). Complete over the
+        // snapshot, then drop them all in a single copy.
         for (Subscriber subscriber : subscribers) {
-            subscribers.remove(subscriber);
             subscriber.complete();
         }
+        subscribers.clear();
     }
 
     /** The number of currently subscribed streams. Exposed for host wiring tests. */
