@@ -23,36 +23,16 @@ repositories {
     mavenCentral()
 }
 
-// Mirrors core's publish setup so all engine modules release together from one CI run. Credentials
-// and the signing key come from ORG_GRADLE_PROJECT_* env vars in release.yml; no key touches disk.
+// Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
+// this module's coordinates, name, and description live here. Published so downstream consumers get
+// the generated gRPC stubs + service without regenerating them from the .proto.
 mavenPublishing {
-    publishToMavenCentral()
-    signAllPublications()
     coordinates("io.github.preagile", "reputation-pool-server", project.version.toString())
     pom {
         name = "Reputation Pool Server"
         description =
             "A gRPC server exposing the reputation-pool engine, wiring the persistence adapter into " +
                 "the pool lifecycle."
-        url = "https://github.com/PreAgile/reputation-pool"
-        licenses {
-            license {
-                name = "The Apache License, Version 2.0"
-                url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
-            }
-        }
-        developers {
-            developer {
-                id = "preagile"
-                name = "meyonsoo"
-                url = "https://github.com/PreAgile"
-            }
-        }
-        scm {
-            url = "https://github.com/PreAgile/reputation-pool"
-            connection = "scm:git:https://github.com/PreAgile/reputation-pool.git"
-            developerConnection = "scm:git:ssh://git@github.com/PreAgile/reputation-pool.git"
-        }
     }
 }
 
@@ -70,9 +50,12 @@ dependencies {
     implementation("org.flywaydb:flyway-core:12.11.0")
     runtimeOnly("org.flywaydb:flyway-database-postgresql:12.11.0")
 
-    implementation("io.grpc:grpc-protobuf:$grpcVersion")
-    implementation("io.grpc:grpc-stub:$grpcVersion")
-    implementation("com.google.protobuf:protobuf-java:$protobufVersion")
+    // api, not implementation: the generated gRPC stubs and message classes are part of this module's
+    // published API, and a downstream consumer that reuses them needs these types on its own compile
+    // classpath. The concrete transport below stays runtimeOnly — consumers pick their own.
+    api("io.grpc:grpc-protobuf:$grpcVersion")
+    api("io.grpc:grpc-stub:$grpcVersion")
+    api("com.google.protobuf:protobuf-java:$protobufVersion")
     // A concrete transport is only needed to actually run/serve; codegen and the mapper do not need it.
     runtimeOnly("io.grpc:grpc-netty-shaded:$grpcVersion")
     // The generated gRPC stubs carry a javax.annotation.Generated annotation; supply it at compile time.

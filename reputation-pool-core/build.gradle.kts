@@ -24,9 +24,9 @@ repositories {
     mavenCentral()
 }
 
+// Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
+// this module's coordinates, name, and description live here.
 mavenPublishing {
-    publishToMavenCentral()
-    signAllPublications()
     coordinates("io.github.preagile", "reputation-pool-core", project.version.toString())
     pom {
         name = "Reputation Pool Core"
@@ -34,25 +34,6 @@ mavenPublishing {
             "A pure-Java, zero-dependency decision engine for leasable resources that carry a " +
                 "reputation (proxies, accounts, sessions): decide whether to lend a resource for a " +
                 "context right now, as a pure function over immutable state."
-        url = "https://github.com/PreAgile/reputation-pool"
-        licenses {
-            license {
-                name = "The Apache License, Version 2.0"
-                url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
-            }
-        }
-        developers {
-            developer {
-                id = "preagile"
-                name = "meyonsoo"
-                url = "https://github.com/PreAgile"
-            }
-        }
-        scm {
-            url = "https://github.com/PreAgile/reputation-pool"
-            connection = "scm:git:https://github.com/PreAgile/reputation-pool.git"
-            developerConnection = "scm:git:ssh://git@github.com/PreAgile/reputation-pool.git"
-        }
     }
 }
 

@@ -19,36 +19,16 @@ repositories {
     mavenCentral()
 }
 
-// Mirrors core's publish setup so all engine modules release together from one CI run. Credentials
-// and the signing key come from ORG_GRADLE_PROJECT_* env vars in release.yml; no key touches disk.
+// Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
+// this module's coordinates, name, and description live here. Published so downstream consumers can
+// reuse the reference adapters instead of reimplementing them.
 mavenPublishing {
-    publishToMavenCentral()
-    signAllPublications()
     coordinates("io.github.preagile", "reputation-pool-adapters", project.version.toString())
     pom {
         name = "Reputation Pool Adapters"
         description =
             "Reference adapters for the reputation-pool engine: HTTP outcome classifiers for proxies " +
                 "and accounts, plus an SLF4J event sink."
-        url = "https://github.com/PreAgile/reputation-pool"
-        licenses {
-            license {
-                name = "The Apache License, Version 2.0"
-                url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
-            }
-        }
-        developers {
-            developer {
-                id = "preagile"
-                name = "meyonsoo"
-                url = "https://github.com/PreAgile"
-            }
-        }
-        scm {
-            url = "https://github.com/PreAgile/reputation-pool"
-            connection = "scm:git:https://github.com/PreAgile/reputation-pool.git"
-            developerConnection = "scm:git:ssh://git@github.com/PreAgile/reputation-pool.git"
-        }
     }
 }
 
