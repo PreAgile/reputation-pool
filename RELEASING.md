@@ -181,11 +181,11 @@ The `release.yml` workflow makes the tag the release trigger — the tag name *i
 version is committed to a file. To cut a release, tag the commit you want and push it:
 
 ```bash
-git tag -a v0.4.0 -m "reputation-pool 0.4.0"
-git push origin v0.4.0
+git tag -a v0.3.1 -m "reputation-pool 0.3.1"
+git push origin v0.3.1
 ```
 
-(Or run the workflow manually from the Actions tab and type the version, e.g. `0.4.0`, which tags the
+(Or run the workflow manually from the Actions tab and type the version, e.g. `0.3.1`, which tags the
 current commit for you.) The workflow then runs `publishAndReleaseToMavenCentral` for every published
 module with the Central credentials and signing key from repository Secrets, and creates the GitHub
 Release. The manual `./gradlew publishToMavenCentral` steps above remain the local fallback for when

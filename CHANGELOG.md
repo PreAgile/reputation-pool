@@ -15,11 +15,11 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.4.0] - Unreleased
+## [0.3.1] - Unreleased
 
 Per-pool state isolation, so one PostgreSQL database can hold many independent pools — the upstream
-half of reputation-pool-cloud's multi-tenant pool isolation. Backward-compatible: existing
-single-pool consumers keep working under the `default` pool id.
+half of reputation-pool-cloud's multi-tenant pool isolation. A backward-compatible, additive change
+(hence a patch): existing single-pool consumers keep working under the `default` pool id.
 
 ### Added
 
