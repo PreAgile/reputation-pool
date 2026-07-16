@@ -71,11 +71,12 @@ jobs:
           # verdict without a commit here. Matches the version the guard was validated against.
           version: 1.71.0
           breaking: true
-          # subdir pins the module root so file paths match on both sides. It also keeps this
-          # bootstrap PR green: main has no buf.yaml yet, so a plain ref would read the proto at
-          # its full repo path and report a spurious "file deleted". Switch the ref to release
-          # tags once the server ships versioned releases.
-          breaking_against: https://github.com/${{ github.repository }}.git#branch=main,subdir=reputation-pool-grpc/src/main/proto
+          # Compare against the last released contract, not main: buf checks the proto definitions
+          # (messages, fields, services), which are path-independent, so diffing against the tag stays
+          # correct even though the proto moved modules (v0.2.0 shipped it under the server; it now
+          # lives under reputation-pool-grpc). subdir pins the module root in that release. Bump the
+          # tag when a newer release becomes the compatibility baseline.
+          breaking_against: https://github.com/${{ github.repository }}.git#ref=v0.2.0,subdir=reputation-pool-server/src/main/proto
           # This job guards the contract only: lint/format would flag pre-existing style the issue
           # deliberately leaves alone, push needs a BSR token, and the PR comment needs write scope.
           lint: false
