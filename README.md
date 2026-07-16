@@ -13,9 +13,10 @@ database, no network. Time, storage, health-probing, and observability are pushe
 [![Java](https://img.shields.io/badge/Java-25%2B-orange.svg)](https://openjdk.org/projects/jdk/25/)
 
 > **Status — early development.** `reputation-pool-core` (the pure decision engine) is published to Maven
-> Central at `0.1.0`. The L1 adapters, the L2 gRPC advisor, and L3 persistence (snapshot + audit trail) are
-> done. Layers are added as separate modules in this same repository — see the [roadmap](#roadmap) and
-> [Design notes](#design-notes) for the full target architecture.
+> Central; `0.2.0` — the second Central release, adding the snapshot/persistence surface — is documented in
+> the [changelog](CHANGELOG.md). The L1 adapters, the L2 gRPC advisor, and L3 persistence (snapshot + audit
+> trail) are done. Layers are added as separate modules in this same repository — see the
+> [roadmap](#roadmap) and [Design notes](#design-notes) for the full target architecture.
 
 ## Why
 
@@ -43,7 +44,7 @@ platform, and logs don't catch it. This engine addresses that with three structu
 ```kotlin
 // build.gradle.kts
 dependencies {
-    implementation("io.github.preagile:reputation-pool-core:0.1.0")
+    implementation("io.github.preagile:reputation-pool-core:0.2.0")
 }
 ```
 
