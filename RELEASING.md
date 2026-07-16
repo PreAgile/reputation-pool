@@ -1,17 +1,18 @@
 # Releasing `reputation-pool-core`
 
-Two modules are published to Maven Central, sharing one version:
+Several modules are published to Maven Central, sharing one version:
 
-- **`reputation-pool-core`** — `io.github.preagile:reputation-pool-core` (the pure decision engine).
-- **`reputation-pool-persistence`** — `io.github.preagile:reputation-pool-persistence` (the
-  PostgreSQL adapter: snapshot store + audit trail). First published at 0.2.0.
+- **`reputation-pool-core`** — `io.github.preagile:reputation-pool-core` (the pure decision engine),
+  published since 0.1.0.
+- **`reputation-pool-persistence`** (the PostgreSQL adapter: snapshot store + audit trail),
+  **`reputation-pool-adapters`**, and **`reputation-pool-server`** (the assembled reference server) —
+  published since 0.2.1.
+- **`reputation-pool-grpc`** — the gRPC surface, extracted into its own module and published at 0.3.0.
 
-The `adapters` and `server` modules are not published — they are consumers, not artifacts. Core's
-internal test fixtures (the `testFixtures` source set: `SettableClock`, `DomainArbitraries`) are
-deliberately excluded from core's publication (see the `withVariantsFromConfiguration { skip() }`
-block in `reputation-pool-core/build.gradle.kts`); persistence has no test fixtures, and its
-`integrationTest` source set is not part of the published `java` component, so neither ships to
-Central.
+Core's internal test fixtures (the `testFixtures` source set: `SettableClock`, `DomainArbitraries`)
+are deliberately excluded from core's publication (see the `withVariantsFromConfiguration { skip() }`
+block in `reputation-pool-core/build.gradle.kts`); persistence's `integrationTest` source set is not
+part of the published `java` component, so neither ships to Central.
 
 Publishing is driven by the [`com.vanniktech.maven.publish`](https://vanniktech.github.io/gradle-maven-publish-plugin/)
 plugin (version `0.37.0`), configured in each publishable module's `build.gradle.kts`:
@@ -22,8 +23,13 @@ command line. Persistence carries runtime dependencies (the PostgreSQL driver an
 generated POM by design; this is expected for an adapter and does not violate core's zero-dependency
 rule (core has none).
 
-This procedure is run **by a maintainer on a machine that holds the Central Portal credentials and
-the GPG signing key**. It is not part of CI today (see "Future" at the end).
+Releases are normally cut by the **tag-triggered GitHub Actions workflow**
+(`.github/workflows/release.yml`): push a `vX.Y.Z` tag (or use its manual "Run workflow" dispatch and
+type the version) and it builds, signs, publishes every module to Maven Central, and cuts a GitHub
+Release. The version comes from the tag — no version lives in a committed file — and the Central
+credentials and GPG key come from repository Secrets, so no maintainer machine has to hold them (see
+"Automated release" at the end). The manual procedure below is the local fallback for publishing by
+hand.
 
 ## 1. Prerequisites
 
@@ -169,8 +175,18 @@ Maven equivalent — a single dependency on `io.github.preagile:reputation-pool-
 a `mvn -q compile` against the same two types — is fine too. A clean compile confirms both artifacts
 and their POMs resolved (the driver and Flyway coming transitively from the persistence POM).
 
-## Future
+## Automated release (the normal path)
 
-This procedure can move to a **tag-triggered GitHub Actions release workflow**: pushing `v*` runs
-`publishAndReleaseToMavenCentral` with credentials from repository secrets. Not built now —
-deliberately kept manual while the release cadence is low and the credentials live on one machine.
+The `release.yml` workflow makes the tag the release trigger — the tag name *is* the version, so no
+version is committed to a file. To cut a release, tag the commit you want and push it:
+
+```bash
+git tag -a v0.4.0 -m "reputation-pool 0.4.0"
+git push origin v0.4.0
+```
+
+(Or run the workflow manually from the Actions tab and type the version, e.g. `0.4.0`, which tags the
+current commit for you.) The workflow then runs `publishAndReleaseToMavenCentral` for every published
+module with the Central credentials and signing key from repository Secrets, and creates the GitHub
+Release. The manual `./gradlew publishToMavenCentral` steps above remain the local fallback for when
+you must publish by hand.

@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.preagile.reputationpool.server;
+package io.github.preagile.reputationpool.grpc;
 
 import com.google.protobuf.Timestamp;
 import io.github.preagile.reputationpool.core.domain.Context;

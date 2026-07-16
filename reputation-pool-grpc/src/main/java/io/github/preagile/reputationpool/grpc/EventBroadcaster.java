@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.preagile.reputationpool.server;
+package io.github.preagile.reputationpool.grpc;
 
 import io.github.preagile.reputationpool.core.domain.PoolEvent;
 import io.github.preagile.reputationpool.core.port.EventSink;
@@ -43,7 +43,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * {@code onReadyHandler}, on its own transport thread. The {@code wip} flag serializes the two so
  * {@code onNext} is never called concurrently (stream observers are not thread-safe).
  */
-final class EventBroadcaster implements EventSink {
+public final class EventBroadcaster implements EventSink {
 
     static final int DEFAULT_QUEUE_CAPACITY = 256;
 
@@ -53,7 +53,7 @@ final class EventBroadcaster implements EventSink {
     // never reads this: after close() the subscriber list is empty, so a late emit is a no-op.
     private boolean closed;
 
-    EventBroadcaster() {
+    public EventBroadcaster() {
         this(DEFAULT_QUEUE_CAPACITY);
     }
 
@@ -96,16 +96,20 @@ final class EventBroadcaster implements EventSink {
         }
     }
 
-    /** Completes every open stream; used on server shutdown so clients see an orderly end. */
-    synchronized void close() {
+    /** Completes every open stream; invoked on host shutdown so clients see an orderly end. */
+    public synchronized void close() {
         closed = true;
+        // Clear once rather than remove-per-element: subscribers is a CopyOnWriteArrayList, so an
+        // in-loop remove copies the whole backing array each time (O(n^2)). Complete over the
+        // snapshot, then drop them all in a single copy.
         for (Subscriber subscriber : subscribers) {
-            subscribers.remove(subscriber);
             subscriber.complete();
         }
+        subscribers.clear();
     }
 
-    int subscriberCount() {
+    /** The number of currently subscribed streams. Exposed for host wiring tests. */
+    public int subscriberCount() {
         return subscribers.size();
     }
 

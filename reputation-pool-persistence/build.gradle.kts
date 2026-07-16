@@ -3,9 +3,9 @@ plugins {
     id("com.diffplug.spotless")
     // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
     id("info.solidsoft.pitest") version "1.19.0"
-    // Same version as core. Unlike core, this adapter has runtime dependencies by design (JDBC
-    // driver, Flyway); they are carried into the published POM via the api/implementation scopes.
-    id("com.vanniktech.maven.publish") version "0.37.0"
+    // Published to Central so cloud (and any downstream) can consume the persistence adapter, not
+    // just the core engine. Version + apply-false live at the root (shared build service).
+    id("com.vanniktech.maven.publish")
 }
 
 java {
@@ -19,35 +19,17 @@ repositories {
     mavenCentral()
 }
 
+// Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
+// this module's coordinates, name, and description live here. Published so cloud (and any downstream)
+// can consume the persistence adapter, not just the core engine.
 mavenPublishing {
-    publishToMavenCentral()
-    signAllPublications()
     coordinates("io.github.preagile", "reputation-pool-persistence", project.version.toString())
     pom {
         name = "Reputation Pool Persistence"
         description =
-            "The PostgreSQL adapter for reputation-pool: a snapshot store and an append-only audit " +
-                "trail (plain JDBC + Flyway) implementing the core's ResourceStore and EventSink ports, " +
-                "so the durable pool state survives a process restart."
-        url = "https://github.com/PreAgile/reputation-pool"
-        licenses {
-            license {
-                name = "The Apache License, Version 2.0"
-                url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
-            }
-        }
-        developers {
-            developer {
-                id = "preagile"
-                name = "meyonsoo"
-                url = "https://github.com/PreAgile"
-            }
-        }
-        scm {
-            url = "https://github.com/PreAgile/reputation-pool"
-            connection = "scm:git:https://github.com/PreAgile/reputation-pool.git"
-            developerConnection = "scm:git:ssh://git@github.com/PreAgile/reputation-pool.git"
-        }
+            "A plain-JDBC PostgreSQL persistence adapter (ResourceStore + audit trail) for the " +
+                "reputation-pool engine, with Flyway-managed schema migrations. No Spring, JPA, or " +
+                "Hibernate."
     }
 }
 
