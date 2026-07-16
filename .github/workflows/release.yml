@@ -18,6 +18,13 @@ on:
         required: true
         type: string
 
+# Serialize releases under one stable group so two in-flight releases cannot race on the same Central
+# staging deployment. Never cancel an in-progress release — a half-published, signed artifact is worse
+# than a queued one.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 # Never let a fork's tag push try to publish with (absent) upstream secrets.
 jobs:
   release:
@@ -33,9 +40,13 @@ jobs:
       # (X.Y.Z, digits only) so a typo cannot publish a garbage coordinate to an immutable registry.
       - name: Resolve and validate version
         id: version
+        # inputs.version reaches the script through the environment, never interpolated into the shell
+        # source — otherwise a crafted dispatch value would run as code before the semver check below.
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            VERSION="${{ inputs.version }}"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            VERSION="$INPUT_VERSION"
           else
             VERSION="${GITHUB_REF_NAME#v}"
           fi
