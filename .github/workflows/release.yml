@@ -34,7 +34,11 @@ jobs:
     permissions:
       contents: write   # create the GitHub Release, and push the tag on manual dispatch
     steps:
+      # fetch-depth: 0 pulls the full history *and every tag* — the monotonic guard below compares the
+      # new version against all prior release tags, which a shallow checkout would not have.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Resolve the version once, from whichever trigger fired, and validate it is strict semver
       # (X.Y.Z, digits only) so a typo cannot publish a garbage coordinate to an immutable registry.
@@ -53,8 +57,22 @@ jobs:
           if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::Version '$VERSION' is not strict semver X.Y.Z"; exit 1
           fi
+
+          # Monotonic guard: the new version must be strictly greater than the highest prior release,
+          # so a fat-fingered downgrade (v0.1.5 after v0.2.0) or a duplicate can never reach the
+          # immutable registry — and a duplicate is caught here, before the build, not at the upload.
+          # On a tag push this run's own tag already exists, so exclude it; on dispatch it does not yet.
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            PRIOR=$(git tag -l 'v*.*.*' | sed 's/^v//' | sort -V | tail -n1)
+          else
+            PRIOR=$(git tag -l 'v*.*.*' | grep -vxF "$GITHUB_REF_NAME" | sed 's/^v//' | sort -V | tail -n1)
+          fi
+          if [ -n "$PRIOR" ] && [ "$(printf '%s\n%s\n' "$PRIOR" "$VERSION" | sort -V | tail -n1)" = "$PRIOR" ]; then
+            echo "::error::Version $VERSION must be strictly greater than the latest release $PRIOR"; exit 1
+          fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "Releasing $VERSION"
+          echo "Releasing $VERSION (prior release: ${PRIOR:-none})"
 
       # Manual dispatch has no tag yet: create v<version> on this commit and push it, so the release
       # is anchored to a real tag (the repo's release discipline) exactly like the tag-push path.
