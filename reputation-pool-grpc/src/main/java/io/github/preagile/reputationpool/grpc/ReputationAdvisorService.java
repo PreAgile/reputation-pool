@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.preagile.reputationpool.server;
+package io.github.preagile.reputationpool.grpc;
 
 import io.github.preagile.reputationpool.core.pool.Lease;
 import io.github.preagile.reputationpool.core.pool.ResourcePool;
@@ -48,13 +48,17 @@ import java.util.function.Supplier;
  * ({@code granted/renewed/released = false}); what the domain throws (malformed input rejected at
  * the boundary) the wire surfaces as a status ({@code INVALID_ARGUMENT}). An empty pool is a normal
  * answer, not an error.
+ *
+ * <p>Framework-agnostic on purpose: a host registers it however it likes — the reference server hands
+ * it to a raw {@code ServerBuilder}, while a Spring host subclasses it and adds its own registration
+ * annotation. The handler logic lives here once, so hosts share it instead of re-implementing it.
  */
-final class ReputationAdvisorService extends ReputationAdvisorGrpc.ReputationAdvisorImplBase {
+public class ReputationAdvisorService extends ReputationAdvisorGrpc.ReputationAdvisorImplBase {
 
     private final ResourcePool pool;
     private final EventBroadcaster broadcaster;
 
-    ReputationAdvisorService(ResourcePool pool, EventBroadcaster broadcaster) {
+    public ReputationAdvisorService(ResourcePool pool, EventBroadcaster broadcaster) {
         this.pool = Objects.requireNonNull(pool, "pool must not be null");
         this.broadcaster = Objects.requireNonNull(broadcaster, "broadcaster must not be null");
     }

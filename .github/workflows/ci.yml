@@ -75,7 +75,7 @@ jobs:
           # bootstrap PR green: main has no buf.yaml yet, so a plain ref would read the proto at
           # its full repo path and report a spurious "file deleted". Switch the ref to release
           # tags once the server ships versioned releases.
-          breaking_against: https://github.com/${{ github.repository }}.git#branch=main,subdir=reputation-pool-server/src/main/proto
+          breaking_against: https://github.com/${{ github.repository }}.git#branch=main,subdir=reputation-pool-grpc/src/main/proto
           # This job guards the contract only: lint/format would flag pre-existing style the issue
           # deliberately leaves alone, push needs a BSR token, and the PR comment needs write scope.
           lint: false

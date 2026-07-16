@@ -1,14 +1,7 @@
-import com.google.protobuf.gradle.id
-
 plugins {
     `java-library`
     id("com.diffplug.spotless")
-    // Generates the protobuf message classes and the gRPC service stubs from src/main/proto.
-    id("com.google.protobuf") version "0.10.0"
-    // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
-    id("info.solidsoft.pitest") version "1.19.0"
-    // Published to Central so downstream consumers get the generated gRPC stubs + service without
-    // regenerating them from the .proto. Version + apply-false live at the root (shared build service).
+    // Version + apply-false live at the root (shared build service); applied here without a version.
     id("com.vanniktech.maven.publish")
 }
 
@@ -24,24 +17,29 @@ repositories {
 }
 
 // Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
-// this module's coordinates, name, and description live here. Published so downstream consumers get
-// the generated gRPC stubs + service without regenerating them from the .proto.
+// this module's coordinates, name, and description live here. Published as the runnable reference host;
+// downstream consumers depend on reputation-pool-grpc for the contract, not on this server.
 mavenPublishing {
     coordinates("io.github.preagile", "reputation-pool-server", project.version.toString())
     pom {
         name = "Reputation Pool Server"
         description =
-            "A gRPC server exposing the reputation-pool engine, wiring the persistence adapter into " +
-                "the pool lifecycle."
+            "The reference gRPC server: a thin composition root that assembles the engine, the " +
+                "persistence adapter, and the reputation-pool-grpc contract into a runnable host."
     }
 }
 
-val grpcVersion = "1.82.2"
-val protobufVersion = "4.35.1"
+// Matches the reputation-pool-grpc baseline so the reference host runs on the same gRPC transport
+// version as the published stubs.
+val grpcVersion = "1.63.0"
 
 dependencies {
     // The server ring depends inward on the pure core; the dependency arrow never points the other way.
     api(project(":reputation-pool-core"))
+
+    // The gRPC surface (advisor.proto stubs + mapping/broadcaster/service) now lives in its own
+    // module; the server assembles it rather than owning it.
+    implementation(project(":reputation-pool-grpc"))
 
     // The composition root wires the persistence adapter (a ResourceStore) into the pool's lifecycle.
     // Versions match the persistence module so the driver/Flyway resolve to one artifact each.
@@ -50,50 +48,18 @@ dependencies {
     implementation("org.flywaydb:flyway-core:12.11.0")
     runtimeOnly("org.flywaydb:flyway-database-postgresql:12.11.0")
 
-    // api, not implementation: the generated gRPC stubs and message classes are part of this module's
-    // published API, and a downstream consumer that reuses them needs these types on its own compile
-    // classpath. The concrete transport below stays runtimeOnly — consumers pick their own.
-    api("io.grpc:grpc-protobuf:$grpcVersion")
-    api("io.grpc:grpc-stub:$grpcVersion")
-    api("com.google.protobuf:protobuf-java:$protobufVersion")
-    // A concrete transport is only needed to actually run/serve; codegen and the mapper do not need it.
+    // A concrete transport is only needed to actually run/serve; the grpc module brings the stub API.
     runtimeOnly("io.grpc:grpc-netty-shaded:$grpcVersion")
-    // The generated gRPC stubs carry a javax.annotation.Generated annotation; supply it at compile time.
-    // This is the artifact the grpc-java README itself recommends: it is Apache-2.0 like this repo,
-    // whereas javax.annotation:javax.annotation-api is CDDL — the "Tomcat 6" vintage is not a defect.
-    compileOnly("org.apache.tomcat:annotations-api:6.0.53")
 
-    // In-process transport: contract tests ride the real gRPC wiring without sockets or ports.
+    // In-process transport: the server's lifecycle tests ride the real gRPC wiring without sockets.
     testImplementation("io.grpc:grpc-inprocess:$grpcVersion")
     testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    // Property tests attack the proto <-> domain mapping invariants (round-trip, enum totality).
     testImplementation("net.jqwik:jqwik:1.10.1")
     testImplementation("org.assertj:assertj-core:3.27.7")
     // Shared test helpers from core (SettableClock) instead of per-module copies.
     testImplementation(testFixtures(project(":reputation-pool-core")))
-
-    // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik), same version as core.
-    pitest("org.pitest:pitest-junit5-plugin:1.2.3")
-}
-
-protobuf {
-    protoc {
-        artifact = "com.google.protobuf:protoc:$protobufVersion"
-    }
-    plugins {
-        id("grpc") {
-            artifact = "io.grpc:protoc-gen-grpc-java:$grpcVersion"
-        }
-    }
-    generateProtoTasks {
-        all().forEach { task ->
-            task.plugins {
-                id("grpc")
-            }
-        }
-    }
 }
 
 tasks.test {
@@ -103,25 +69,8 @@ tasks.test {
     }
 }
 
-// PIT targets only the pure proto<->domain mapper (ProtoMapping). The gRPC wiring (AdvisorServer,
-// EventBroadcaster, ReputationAdvisorService) is excluded: its mutants cannot be killed without a
-// live transport. `targetTests` pins the mapper's tests.
-pitest {
-    pitestVersion = "1.25.5"
-    junit5PluginVersion = "1.2.3"
-    targetClasses = setOf("io.github.preagile.reputationpool.server.ProtoMapping")
-    targetTests = setOf("io.github.preagile.reputationpool.server.ProtoMapping*Test")
-    threads = 4
-    timestampedReports = false
-    // Measured baseline: 0 surviving mutants (25/25 killed), stable across repeated runs since the
-    // Timestamp range-endpoint example pinned the guard's boundaries. Tighten only, never raise.
-    maxSurviving = 0
-}
-
 tasks.withType<Javadoc>().configureEach {
     (options as StandardJavadocDocletOptions).addBooleanOption("Xdoclint:all,-missing", true)
-    // Generated protobuf/gRPC sources are not ours to document — lint only the handwritten code.
-    exclude("io/github/preagile/reputationpool/grpc/**")
 }
 
 // Make Javadoc part of the build gate, as in the other modules, so a broken doc reference fails the
@@ -132,9 +81,6 @@ tasks.named("check") {
 
 spotless {
     java {
-        // Only our hand-written sources — the generated protobuf/gRPC code lives under build/ and is
-        // left untouched (no license header, no formatting check).
-        target("src/*/java/**/*.java")
         palantirJavaFormat("2.73.0")
         removeUnusedImports()
         trimTrailingWhitespace()

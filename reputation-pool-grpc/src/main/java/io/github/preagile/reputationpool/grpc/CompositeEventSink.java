@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.github.preagile.reputationpool.server;
+package io.github.preagile.reputationpool.grpc;
 
 import io.github.preagile.reputationpool.core.domain.PoolEvent;
 import io.github.preagile.reputationpool.core.port.EventSink;
@@ -32,7 +32,7 @@ import java.util.List;
  * non-blocking discipline (bounded queues, background writers); this class only sequences the calls on
  * the emitting thread.
  */
-final class CompositeEventSink implements EventSink {
+public final class CompositeEventSink implements EventSink {
 
     private static final Logger LOG = System.getLogger(CompositeEventSink.class.getName());
 
@@ -42,7 +42,7 @@ final class CompositeEventSink implements EventSink {
      * @param delegates the sinks to fan out to, called in list order; never null or empty
      * @throws IllegalArgumentException if {@code delegates} is empty
      */
-    CompositeEventSink(List<EventSink> delegates) {
+    public CompositeEventSink(List<EventSink> delegates) {
         this.delegates = List.copyOf(delegates);
         if (this.delegates.isEmpty()) {
             throw new IllegalArgumentException("delegates must not be empty");
