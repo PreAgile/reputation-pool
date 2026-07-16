@@ -29,7 +29,6 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Statement;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
@@ -65,30 +64,51 @@ import javax.sql.DataSource;
  */
 public final class PostgresResourceStore implements ResourceStore {
 
+    /** The pool namespace used when a caller does not supply one — matches the {@code V3} column default. */
+    private static final String DEFAULT_POOL_ID = "default";
+
     private final DataSource dataSource;
     private final Clock clock;
+    private final String poolId;
 
     /**
-     * Creates a store over {@code dataSource}, timestamping each saved checkpoint with the system UTC
-     * clock.
+     * Creates a store over {@code dataSource} for the {@code default} pool, timestamping each saved
+     * checkpoint with the system UTC clock. Backward-compatible entry point: a single-pool host (the
+     * reference server) keeps its exact prior behavior, now expressed as the {@code default} namespace.
      *
      * @param dataSource the pooled connection source to PostgreSQL; never null
      */
     public PostgresResourceStore(DataSource dataSource) {
-        this(dataSource, Clock.systemUTC());
+        this(dataSource, Clock.systemUTC(), DEFAULT_POOL_ID);
     }
 
     /**
-     * Creates a store over {@code dataSource} using {@code clock} for the {@code snapshot_meta}
-     * timestamp — the injectable-time overload, used by tests. The clock touches only the marker
-     * timestamp; it is never read back into the reconstructed snapshot.
+     * Creates a {@code default}-pool store over {@code dataSource} using {@code clock} for the
+     * {@code snapshot_meta} timestamp — the injectable-time overload, used by tests. The clock touches
+     * only the marker timestamp; it is never read back into the reconstructed snapshot.
      *
      * @param dataSource the pooled connection source to PostgreSQL; never null
      * @param clock the clock stamping {@code saved_at}; never null
      */
     public PostgresResourceStore(DataSource dataSource, Clock clock) {
+        this(dataSource, clock, DEFAULT_POOL_ID);
+    }
+
+    /**
+     * Creates a store scoped to one {@code poolId} — the namespace every read and write is confined to.
+     * Two stores over the same {@code dataSource} with different pool ids see and touch disjoint rows:
+     * {@code save} deletes and re-inserts only this pool's rows, and {@code load} reads only this pool's
+     * rows, so one pool's checkpoint never overwrites another's. This is the constructor a multi-tenant
+     * host uses, one store per tenant.
+     *
+     * @param dataSource the pooled connection source to PostgreSQL; never null
+     * @param clock the clock stamping {@code saved_at}; never null
+     * @param poolId the pool namespace this store is confined to; never null
+     */
+    public PostgresResourceStore(DataSource dataSource, Clock clock, String poolId) {
         this.dataSource = Objects.requireNonNull(dataSource, "dataSource must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
+        this.poolId = Objects.requireNonNull(poolId, "poolId must not be null");
     }
 
     @Override
@@ -161,53 +181,62 @@ public final class PostgresResourceStore implements ResourceStore {
 
     // --- save helpers -------------------------------------------------------
 
-    private static void deleteAll(Connection connection) throws SQLException {
-        try (Statement statement = connection.createStatement()) {
-            // Deleting cell cascades to its cell_outcome rows (ON DELETE CASCADE), so no explicit
-            // DELETE FROM cell_outcome is needed.
-            statement.addBatch("DELETE FROM cell");
-            statement.addBatch("DELETE FROM blocklist_entry");
-            statement.addBatch("DELETE FROM registered_resource");
-            statement.executeBatch();
+    private void deleteAll(Connection connection) throws SQLException {
+        // Every delete is narrowed to this pool's rows with WHERE pool_id = ?, so a save() never touches
+        // another pool's state. Deleting this pool's cell rows cascades to their cell_outcome rows (the
+        // pool-scoped ON DELETE CASCADE), so no explicit DELETE FROM cell_outcome is needed.
+        try (PreparedStatement deleteCell = connection.prepareStatement("DELETE FROM cell WHERE pool_id = ?");
+                PreparedStatement deleteBlocklist =
+                        connection.prepareStatement("DELETE FROM blocklist_entry WHERE pool_id = ?");
+                PreparedStatement deleteRegistered =
+                        connection.prepareStatement("DELETE FROM registered_resource WHERE pool_id = ?")) {
+            deleteCell.setString(1, poolId);
+            deleteBlocklist.setString(1, poolId);
+            deleteRegistered.setString(1, poolId);
+            deleteCell.executeUpdate();
+            deleteBlocklist.executeUpdate();
+            deleteRegistered.executeUpdate();
         }
     }
 
-    private static void insertCells(Connection connection, Map<CellKey, ReputationCell> cells) throws SQLException {
+    private void insertCells(Connection connection, Map<CellKey, ReputationCell> cells) throws SQLException {
         String insertCell =
                 """
-                INSERT INTO cell (resource_kind, resource_value, context, score, consecutive_failures,
+                INSERT INTO cell (pool_id, resource_kind, resource_value, context, score, consecutive_failures,
                     consecutive_successes, state, cooldown_until, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""";
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""";
         String insertOutcome =
                 """
-                INSERT INTO cell_outcome (resource_kind, resource_value, context, ordinal, success,
+                INSERT INTO cell_outcome (pool_id, resource_kind, resource_value, context, ordinal, success,
                     failure_type, latency_ns)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""";
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""";
         try (PreparedStatement cellStatement = connection.prepareStatement(insertCell);
                 PreparedStatement outcomeStatement = connection.prepareStatement(insertOutcome)) {
             for (ReputationCell cell : cells.values()) {
                 ResourceId resource = cell.resourceId();
-                cellStatement.setString(1, resource.kind().name());
-                cellStatement.setString(2, resource.value());
-                cellStatement.setString(3, cell.context().value());
-                cellStatement.setDouble(4, cell.score());
-                cellStatement.setInt(5, cell.consecutiveFailures());
-                cellStatement.setInt(6, cell.consecutiveSuccesses());
-                cellStatement.setString(7, cell.state().name());
-                cellStatement.setLong(8, SnapshotMapper.instantToEpochNanos(cell.cooldownUntil()));
-                cellStatement.setLong(9, SnapshotMapper.instantToEpochNanos(cell.updatedAt()));
+                cellStatement.setString(1, poolId);
+                cellStatement.setString(2, resource.kind().name());
+                cellStatement.setString(3, resource.value());
+                cellStatement.setString(4, cell.context().value());
+                cellStatement.setDouble(5, cell.score());
+                cellStatement.setInt(6, cell.consecutiveFailures());
+                cellStatement.setInt(7, cell.consecutiveSuccesses());
+                cellStatement.setString(8, cell.state().name());
+                cellStatement.setLong(9, SnapshotMapper.instantToEpochNanos(cell.cooldownUntil()));
+                cellStatement.setLong(10, SnapshotMapper.instantToEpochNanos(cell.updatedAt()));
                 cellStatement.addBatch();
 
                 List<Outcome> window = cell.window();
                 for (int ordinal = 0; ordinal < window.size(); ordinal++) {
                     SnapshotMapper.OutcomeRow row = SnapshotMapper.outcomeToRow(window.get(ordinal));
-                    outcomeStatement.setString(1, resource.kind().name());
-                    outcomeStatement.setString(2, resource.value());
-                    outcomeStatement.setString(3, cell.context().value());
-                    outcomeStatement.setInt(4, ordinal);
-                    outcomeStatement.setBoolean(5, row.success());
-                    outcomeStatement.setString(6, row.failureType());
-                    outcomeStatement.setLong(7, row.latencyNs());
+                    outcomeStatement.setString(1, poolId);
+                    outcomeStatement.setString(2, resource.kind().name());
+                    outcomeStatement.setString(3, resource.value());
+                    outcomeStatement.setString(4, cell.context().value());
+                    outcomeStatement.setInt(5, ordinal);
+                    outcomeStatement.setBoolean(6, row.success());
+                    outcomeStatement.setString(7, row.failureType());
+                    outcomeStatement.setLong(8, row.latencyNs());
                     outcomeStatement.addBatch();
                 }
             }
@@ -216,18 +245,19 @@ public final class PostgresResourceStore implements ResourceStore {
         }
     }
 
-    private static void insertBlocklist(Connection connection, Blocklist blocklist) throws SQLException {
-        String sql = "INSERT INTO blocklist_entry (resource_kind, resource_value, until) VALUES (?, ?, ?)";
+    private void insertBlocklist(Connection connection, Blocklist blocklist) throws SQLException {
+        String sql = "INSERT INTO blocklist_entry (pool_id, resource_kind, resource_value, until) VALUES (?, ?, ?, ?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             for (Map.Entry<ResourceId, Instant> entry : blocklist.entries().entrySet()) {
                 ResourceId resource = entry.getKey();
-                statement.setString(1, resource.kind().name());
-                statement.setString(2, resource.value());
+                statement.setString(1, poolId);
+                statement.setString(2, resource.kind().name());
+                statement.setString(3, resource.value());
                 Long until = SnapshotMapper.blocklistUntilToEpochNanos(entry.getValue());
                 if (until == null) {
-                    statement.setNull(3, java.sql.Types.BIGINT);
+                    statement.setNull(4, java.sql.Types.BIGINT);
                 } else {
-                    statement.setLong(3, until);
+                    statement.setLong(4, until);
                 }
                 statement.addBatch();
             }
@@ -235,12 +265,13 @@ public final class PostgresResourceStore implements ResourceStore {
         }
     }
 
-    private static void insertRegistered(Connection connection, Set<ResourceId> registered) throws SQLException {
-        String sql = "INSERT INTO registered_resource (resource_kind, resource_value) VALUES (?, ?)";
+    private void insertRegistered(Connection connection, Set<ResourceId> registered) throws SQLException {
+        String sql = "INSERT INTO registered_resource (pool_id, resource_kind, resource_value) VALUES (?, ?, ?)";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             for (ResourceId resource : registered) {
-                statement.setString(1, resource.kind().name());
-                statement.setString(2, resource.value());
+                statement.setString(1, poolId);
+                statement.setString(2, resource.kind().name());
+                statement.setString(3, resource.value());
                 statement.addBatch();
             }
             statement.executeBatch();
@@ -248,99 +279,113 @@ public final class PostgresResourceStore implements ResourceStore {
     }
 
     private void upsertMeta(Connection connection) throws SQLException {
-        String sql = "INSERT INTO snapshot_meta (id, saved_at) VALUES (1, ?) "
-                + "ON CONFLICT (id) DO UPDATE SET saved_at = EXCLUDED.saved_at";
+        String sql = "INSERT INTO snapshot_meta (pool_id, saved_at) VALUES (?, ?) "
+                + "ON CONFLICT (pool_id) DO UPDATE SET saved_at = EXCLUDED.saved_at";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setTimestamp(1, Timestamp.from(clock.instant()));
+            statement.setString(1, poolId);
+            statement.setTimestamp(2, Timestamp.from(clock.instant()));
             statement.executeUpdate();
         }
     }
 
     // --- load helpers -------------------------------------------------------
 
-    private static boolean snapshotExists(Connection connection) throws SQLException {
-        try (Statement statement = connection.createStatement();
-                ResultSet resultSet = statement.executeQuery("SELECT 1 FROM snapshot_meta WHERE id = 1")) {
-            return resultSet.next();
+    private boolean snapshotExists(Connection connection) throws SQLException {
+        try (PreparedStatement statement =
+                connection.prepareStatement("SELECT 1 FROM snapshot_meta WHERE pool_id = ?")) {
+            statement.setString(1, poolId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next();
+            }
         }
     }
 
-    private static Map<CellKey, ReputationCell> loadCells(Connection connection) throws SQLException {
+    private Map<CellKey, ReputationCell> loadCells(Connection connection) throws SQLException {
         Map<Coordinate, List<Outcome>> windows = loadWindows(connection);
         Map<CellKey, ReputationCell> cells = new LinkedHashMap<>();
         String sql =
                 """
                 SELECT resource_kind, resource_value, context, score, consecutive_failures,
                     consecutive_successes, state, cooldown_until, updated_at
-                FROM cell""";
-        try (Statement statement = connection.createStatement();
-                ResultSet resultSet = statement.executeQuery(sql)) {
-            while (resultSet.next()) {
-                ResourceId resource =
-                        new ResourceId(ResourceKind.valueOf(resultSet.getString(1)), resultSet.getString(2));
-                Context context = new Context(resultSet.getString(3));
-                Coordinate coordinate = new Coordinate(resource, context);
-                ReputationCell cell = new ReputationCell(
-                        resource,
-                        context,
-                        resultSet.getDouble(4),
-                        resultSet.getInt(5),
-                        resultSet.getInt(6),
-                        windows.getOrDefault(coordinate, List.of()),
-                        ResourceState.valueOf(resultSet.getString(7)),
-                        SnapshotMapper.epochNanosToInstant(resultSet.getLong(8)),
-                        SnapshotMapper.epochNanosToInstant(resultSet.getLong(9)));
-                cells.put(new CellKey(resource, context), cell);
+                FROM cell WHERE pool_id = ?""";
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, poolId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    ResourceId resource =
+                            new ResourceId(ResourceKind.valueOf(resultSet.getString(1)), resultSet.getString(2));
+                    Context context = new Context(resultSet.getString(3));
+                    Coordinate coordinate = new Coordinate(resource, context);
+                    ReputationCell cell = new ReputationCell(
+                            resource,
+                            context,
+                            resultSet.getDouble(4),
+                            resultSet.getInt(5),
+                            resultSet.getInt(6),
+                            windows.getOrDefault(coordinate, List.of()),
+                            ResourceState.valueOf(resultSet.getString(7)),
+                            SnapshotMapper.epochNanosToInstant(resultSet.getLong(8)),
+                            SnapshotMapper.epochNanosToInstant(resultSet.getLong(9)));
+                    cells.put(new CellKey(resource, context), cell);
+                }
             }
         }
         return cells;
     }
 
-    private static Map<Coordinate, List<Outcome>> loadWindows(Connection connection) throws SQLException {
+    private Map<Coordinate, List<Outcome>> loadWindows(Connection connection) throws SQLException {
         Map<Coordinate, List<Outcome>> windows = new HashMap<>();
         String sql =
                 """
                 SELECT resource_kind, resource_value, context, success, failure_type, latency_ns
                 FROM cell_outcome
+                WHERE pool_id = ?
                 ORDER BY resource_kind, resource_value, context, ordinal""";
-        try (Statement statement = connection.createStatement();
-                ResultSet resultSet = statement.executeQuery(sql)) {
-            while (resultSet.next()) {
-                ResourceId resource =
-                        new ResourceId(ResourceKind.valueOf(resultSet.getString(1)), resultSet.getString(2));
-                Context context = new Context(resultSet.getString(3));
-                Outcome outcome =
-                        SnapshotMapper.toOutcome(resultSet.getBoolean(4), resultSet.getString(5), resultSet.getLong(6));
-                windows.computeIfAbsent(new Coordinate(resource, context), key -> new ArrayList<>())
-                        .add(outcome);
+        try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            statement.setString(1, poolId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    ResourceId resource =
+                            new ResourceId(ResourceKind.valueOf(resultSet.getString(1)), resultSet.getString(2));
+                    Context context = new Context(resultSet.getString(3));
+                    Outcome outcome = SnapshotMapper.toOutcome(
+                            resultSet.getBoolean(4), resultSet.getString(5), resultSet.getLong(6));
+                    windows.computeIfAbsent(new Coordinate(resource, context), key -> new ArrayList<>())
+                            .add(outcome);
+                }
             }
         }
         return windows;
     }
 
-    private static Blocklist loadBlocklist(Connection connection) throws SQLException {
+    private Blocklist loadBlocklist(Connection connection) throws SQLException {
         Map<ResourceId, Instant> entries = new HashMap<>();
-        try (Statement statement = connection.createStatement();
-                ResultSet resultSet =
-                        statement.executeQuery("SELECT resource_kind, resource_value, until FROM blocklist_entry")) {
-            while (resultSet.next()) {
-                ResourceId resource =
-                        new ResourceId(ResourceKind.valueOf(resultSet.getString(1)), resultSet.getString(2));
-                long untilNanos = resultSet.getLong(3);
-                Long until = resultSet.wasNull() ? null : untilNanos;
-                entries.put(resource, SnapshotMapper.epochNanosToBlocklistUntil(until));
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT resource_kind, resource_value, until FROM blocklist_entry WHERE pool_id = ?")) {
+            statement.setString(1, poolId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    ResourceId resource =
+                            new ResourceId(ResourceKind.valueOf(resultSet.getString(1)), resultSet.getString(2));
+                    long untilNanos = resultSet.getLong(3);
+                    Long until = resultSet.wasNull() ? null : untilNanos;
+                    entries.put(resource, SnapshotMapper.epochNanosToBlocklistUntil(until));
+                }
             }
         }
         return new Blocklist(entries);
     }
 
-    private static Set<ResourceId> loadRegistered(Connection connection) throws SQLException {
+    private Set<ResourceId> loadRegistered(Connection connection) throws SQLException {
         Set<ResourceId> registered = new java.util.HashSet<>();
-        try (Statement statement = connection.createStatement();
-                ResultSet resultSet =
-                        statement.executeQuery("SELECT resource_kind, resource_value FROM registered_resource")) {
-            while (resultSet.next()) {
-                registered.add(new ResourceId(ResourceKind.valueOf(resultSet.getString(1)), resultSet.getString(2)));
+        try (PreparedStatement statement = connection.prepareStatement(
+                "SELECT resource_kind, resource_value FROM registered_resource WHERE pool_id = ?")) {
+            statement.setString(1, poolId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                while (resultSet.next()) {
+                    registered.add(
+                            new ResourceId(ResourceKind.valueOf(resultSet.getString(1)), resultSet.getString(2)));
+                }
             }
         }
         return registered;

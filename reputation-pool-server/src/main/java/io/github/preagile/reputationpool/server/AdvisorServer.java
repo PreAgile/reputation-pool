@@ -359,7 +359,9 @@ public final class AdvisorServer {
             // Flyway brings the schema up to date before the store touches any table.
             Flyway.configure().dataSource(dataSource).load().migrate();
             auditTrail = new PostgresAuditTrail(dataSource);
-            PostgresResourceStore resourceStore = new PostgresResourceStore(dataSource);
+            // The reference server is a single-tenant host, so it owns the one "default" pool namespace
+            // introduced by V3 — explicit here so the composition root names the pool it checkpoints to.
+            PostgresResourceStore resourceStore = new PostgresResourceStore(dataSource, Clock.systemUTC(), "default");
             String retentionEnv = System.getenv(ENV_AUDIT_RETENTION);
             if (retentionEnv != null && !retentionEnv.isBlank()) {
                 // Opt-in retention: the trail is bounded only when the operator says how much history
