@@ -3,6 +3,9 @@ plugins {
     id("com.diffplug.spotless")
     // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
     id("info.solidsoft.pitest") version "1.19.0"
+    // Published to Central so downstream consumers can reuse the reference adapters instead of
+    // reimplementing them. Version + apply-false live at the root (shared build service).
+    id("com.vanniktech.maven.publish")
 }
 
 java {
@@ -14,6 +17,19 @@ java {
 
 repositories {
     mavenCentral()
+}
+
+// Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
+// this module's coordinates, name, and description live here. Published so downstream consumers can
+// reuse the reference adapters instead of reimplementing them.
+mavenPublishing {
+    coordinates("io.github.preagile", "reputation-pool-adapters", project.version.toString())
+    pom {
+        name = "Reputation Pool Adapters"
+        description =
+            "Reference adapters for the reputation-pool engine: HTTP outcome classifiers for proxies " +
+                "and accounts, plus an SLF4J event sink."
+    }
 }
 
 dependencies {

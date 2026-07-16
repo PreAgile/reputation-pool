@@ -7,6 +7,9 @@ plugins {
     id("com.google.protobuf") version "0.10.0"
     // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
     id("info.solidsoft.pitest") version "1.19.0"
+    // Published to Central so downstream consumers get the generated gRPC stubs + service without
+    // regenerating them from the .proto. Version + apply-false live at the root (shared build service).
+    id("com.vanniktech.maven.publish")
 }
 
 java {
@@ -18,6 +21,19 @@ java {
 
 repositories {
     mavenCentral()
+}
+
+// Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
+// this module's coordinates, name, and description live here. Published so downstream consumers get
+// the generated gRPC stubs + service without regenerating them from the .proto.
+mavenPublishing {
+    coordinates("io.github.preagile", "reputation-pool-server", project.version.toString())
+    pom {
+        name = "Reputation Pool Server"
+        description =
+            "A gRPC server exposing the reputation-pool engine, wiring the persistence adapter into " +
+                "the pool lifecycle."
+    }
 }
 
 val grpcVersion = "1.82.2"
@@ -34,9 +50,12 @@ dependencies {
     implementation("org.flywaydb:flyway-core:12.11.0")
     runtimeOnly("org.flywaydb:flyway-database-postgresql:12.11.0")
 
-    implementation("io.grpc:grpc-protobuf:$grpcVersion")
-    implementation("io.grpc:grpc-stub:$grpcVersion")
-    implementation("com.google.protobuf:protobuf-java:$protobufVersion")
+    // api, not implementation: the generated gRPC stubs and message classes are part of this module's
+    // published API, and a downstream consumer that reuses them needs these types on its own compile
+    // classpath. The concrete transport below stays runtimeOnly — consumers pick their own.
+    api("io.grpc:grpc-protobuf:$grpcVersion")
+    api("io.grpc:grpc-stub:$grpcVersion")
+    api("com.google.protobuf:protobuf-java:$protobufVersion")
     // A concrete transport is only needed to actually run/serve; codegen and the mapper do not need it.
     runtimeOnly("io.grpc:grpc-netty-shaded:$grpcVersion")
     // The generated gRPC stubs carry a javax.annotation.Generated annotation; supply it at compile time.

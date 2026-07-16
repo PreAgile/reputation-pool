@@ -3,6 +3,9 @@ plugins {
     id("com.diffplug.spotless")
     // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
     id("info.solidsoft.pitest") version "1.19.0"
+    // Published to Central so cloud (and any downstream) can consume the persistence adapter, not
+    // just the core engine. Version + apply-false live at the root (shared build service).
+    id("com.vanniktech.maven.publish")
 }
 
 java {
@@ -14,6 +17,20 @@ java {
 
 repositories {
     mavenCentral()
+}
+
+// Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
+// this module's coordinates, name, and description live here. Published so cloud (and any downstream)
+// can consume the persistence adapter, not just the core engine.
+mavenPublishing {
+    coordinates("io.github.preagile", "reputation-pool-persistence", project.version.toString())
+    pom {
+        name = "Reputation Pool Persistence"
+        description =
+            "A plain-JDBC PostgreSQL persistence adapter (ResourceStore + audit trail) for the " +
+                "reputation-pool engine, with Flyway-managed schema migrations. No Spring, JPA, or " +
+                "Hibernate."
+    }
 }
 
 // A separate source set for Testcontainers integration tests. It is deliberately NOT wired into
