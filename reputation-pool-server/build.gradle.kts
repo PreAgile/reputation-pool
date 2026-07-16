@@ -7,6 +7,9 @@ plugins {
     id("com.google.protobuf") version "0.10.0"
     // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
     id("info.solidsoft.pitest") version "1.19.0"
+    // Published to Central so downstream consumers get the generated gRPC stubs + service without
+    // regenerating them from the .proto. Version + apply-false live at the root (shared build service).
+    id("com.vanniktech.maven.publish")
 }
 
 java {
@@ -18,6 +21,39 @@ java {
 
 repositories {
     mavenCentral()
+}
+
+// Mirrors core's publish setup so all engine modules release together from one CI run. Credentials
+// and the signing key come from ORG_GRADLE_PROJECT_* env vars in release.yml; no key touches disk.
+mavenPublishing {
+    publishToMavenCentral()
+    signAllPublications()
+    coordinates("io.github.preagile", "reputation-pool-server", project.version.toString())
+    pom {
+        name = "Reputation Pool Server"
+        description =
+            "A gRPC server exposing the reputation-pool engine, wiring the persistence adapter into " +
+                "the pool lifecycle."
+        url = "https://github.com/PreAgile/reputation-pool"
+        licenses {
+            license {
+                name = "The Apache License, Version 2.0"
+                url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
+            }
+        }
+        developers {
+            developer {
+                id = "preagile"
+                name = "meyonsoo"
+                url = "https://github.com/PreAgile"
+            }
+        }
+        scm {
+            url = "https://github.com/PreAgile/reputation-pool"
+            connection = "scm:git:https://github.com/PreAgile/reputation-pool.git"
+            developerConnection = "scm:git:ssh://git@github.com/PreAgile/reputation-pool.git"
+        }
+    }
 }
 
 val grpcVersion = "1.82.2"

@@ -9,7 +9,8 @@ plugins {
     // On-demand mutation testing via `./gradlew pitest`. 1.19.0 is the first release
     // that supports Gradle 9.x; it is deliberately NOT wired into `build` or CI.
     id("info.solidsoft.pitest") version "1.19.0"
-    id("com.vanniktech.maven.publish") version "0.37.0"
+    // Version + apply-false declared at the root (shared build service); applied here without a version.
+    id("com.vanniktech.maven.publish")
 }
 
 java {

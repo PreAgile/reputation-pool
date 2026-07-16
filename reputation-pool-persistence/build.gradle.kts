@@ -3,6 +3,9 @@ plugins {
     id("com.diffplug.spotless")
     // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
     id("info.solidsoft.pitest") version "1.19.0"
+    // Published to Central so cloud (and any downstream) can consume the persistence adapter, not
+    // just the core engine. Version + apply-false live at the root (shared build service).
+    id("com.vanniktech.maven.publish")
 }
 
 java {
@@ -14,6 +17,42 @@ java {
 
 repositories {
     mavenCentral()
+}
+
+// Mirrors core's publish setup so all engine modules release together from one CI run. vanniktech
+// reads the signing key + Central credentials from ORG_GRADLE_PROJECT_* env vars (see release.yml),
+// so no key touches disk. publishToMavenCentral() (no-arg) targets the Central Portal and attaches
+// the sources + javadoc jars Central requires.
+mavenPublishing {
+    publishToMavenCentral()
+    signAllPublications()
+    coordinates("io.github.preagile", "reputation-pool-persistence", project.version.toString())
+    pom {
+        name = "Reputation Pool Persistence"
+        description =
+            "A plain-JDBC PostgreSQL persistence adapter (ResourceStore + audit trail) for the " +
+                "reputation-pool engine, with Flyway-managed schema migrations. No Spring, JPA, or " +
+                "Hibernate."
+        url = "https://github.com/PreAgile/reputation-pool"
+        licenses {
+            license {
+                name = "The Apache License, Version 2.0"
+                url = "https://www.apache.org/licenses/LICENSE-2.0.txt"
+            }
+        }
+        developers {
+            developer {
+                id = "preagile"
+                name = "meyonsoo"
+                url = "https://github.com/PreAgile"
+            }
+        }
+        scm {
+            url = "https://github.com/PreAgile/reputation-pool"
+            connection = "scm:git:https://github.com/PreAgile/reputation-pool.git"
+            developerConnection = "scm:git:ssh://git@github.com/PreAgile/reputation-pool.git"
+        }
+    }
 }
 
 // A separate source set for Testcontainers integration tests. It is deliberately NOT wired into
