@@ -63,10 +63,35 @@ public class ReputationAdvisorService extends ReputationAdvisorGrpc.ReputationAd
         this.broadcaster = Objects.requireNonNull(broadcaster, "broadcaster must not be null");
     }
 
+    /**
+     * For subclasses that resolve the pool per call by overriding {@link #pool()} — e.g. a multi-tenant
+     * host routing each request to a tenant-scoped pool — rather than holding one fixed pool. No pool is
+     * stored, so {@link #pool()} <strong>must</strong> be overridden; the default {@link #pool()} would
+     * return {@code null} and every handler would fail. The single-pool constructor above is unchanged,
+     * so the reference server and any existing consumer keep their exact behavior.
+     *
+     * @param broadcaster the subscription registry for the event stream; never null
+     */
+    protected ReputationAdvisorService(EventBroadcaster broadcaster) {
+        this.pool = null;
+        this.broadcaster = Objects.requireNonNull(broadcaster, "broadcaster must not be null");
+    }
+
+    /**
+     * The pool a handler acts on. The default returns the pool injected at construction; a subclass can
+     * override it to resolve the pool per call (for example, from a tenant carried on the gRPC context)
+     * so it reuses every handler's decode/encode/error logic without re-implementing it.
+     *
+     * @return the pool this call's single domain operation runs against; never null
+     */
+    protected ResourcePool pool() {
+        return this.pool;
+    }
+
     @Override
     public void register(RegisterRequest request, StreamObserver<RegisterResponse> observer) {
         unary(observer, () -> {
-            pool.register(ProtoMapping.toDomain(request.getResource()));
+            pool().register(ProtoMapping.toDomain(request.getResource()));
             return RegisterResponse.getDefaultInstance();
         });
     }
@@ -74,7 +99,7 @@ public class ReputationAdvisorService extends ReputationAdvisorGrpc.ReputationAd
     @Override
     public void acquire(AcquireRequest request, StreamObserver<AcquireResponse> observer) {
         unary(observer, () -> {
-            Optional<Lease> lease = pool.acquire(ProtoMapping.toDomain(request.getContext()));
+            Optional<Lease> lease = pool().acquire(ProtoMapping.toDomain(request.getContext()));
             return lease.map(l -> AcquireResponse.newBuilder().setGranted(true).setLease(ProtoMapping.toProto(l)))
                     .orElseGet(() -> AcquireResponse.newBuilder().setGranted(false))
                     .build();
@@ -84,10 +109,10 @@ public class ReputationAdvisorService extends ReputationAdvisorGrpc.ReputationAd
     @Override
     public void report(ReportRequest request, StreamObserver<ReportResponse> observer) {
         unary(observer, () -> {
-            pool.report(
-                    ProtoMapping.toDomain(request.getResource()),
-                    ProtoMapping.toDomain(request.getContext()),
-                    ProtoMapping.toDomain(request.getOutcome()));
+            pool().report(
+                            ProtoMapping.toDomain(request.getResource()),
+                            ProtoMapping.toDomain(request.getContext()),
+                            ProtoMapping.toDomain(request.getOutcome()));
             return ReportResponse.getDefaultInstance();
         });
     }
@@ -95,7 +120,7 @@ public class ReputationAdvisorService extends ReputationAdvisorGrpc.ReputationAd
     @Override
     public void renew(RenewRequest request, StreamObserver<RenewResponse> observer) {
         unary(observer, () -> {
-            Optional<Lease> renewed = pool.renew(ProtoMapping.toDomain(request.getLease()));
+            Optional<Lease> renewed = pool().renew(ProtoMapping.toDomain(request.getLease()));
             return renewed.map(l -> RenewResponse.newBuilder().setRenewed(true).setLease(ProtoMapping.toProto(l)))
                     .orElseGet(() -> RenewResponse.newBuilder().setRenewed(false))
                     .build();
@@ -105,7 +130,7 @@ public class ReputationAdvisorService extends ReputationAdvisorGrpc.ReputationAd
     @Override
     public void release(ReleaseRequest request, StreamObserver<ReleaseResponse> observer) {
         unary(observer, () -> {
-            boolean released = pool.release(ProtoMapping.toDomain(request.getLease()));
+            boolean released = pool().release(ProtoMapping.toDomain(request.getLease()));
             return ReleaseResponse.newBuilder().setReleased(released).build();
         });
     }
