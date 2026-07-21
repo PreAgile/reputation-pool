@@ -25,7 +25,7 @@ repositories {
 // Conservative, widely-compatible baseline shared by every consumer of this contract module (the
 // reference server and any downstream host). protobuf 3.x avoids the 4.x runtime break, so a host
 // pinned to an older gRPC/protobuf (e.g. via a Spring gRPC starter) can consume these stubs as-is.
-val grpcVersion = "1.63.0"
+val grpcVersion = "1.82.2"
 val protobufVersion = "3.25.1"
 
 // Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
