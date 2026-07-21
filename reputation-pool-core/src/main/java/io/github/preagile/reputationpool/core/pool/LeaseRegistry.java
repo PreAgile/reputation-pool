@@ -147,6 +147,28 @@ public final class LeaseRegistry {
         return current != null && !current.isExpired(now);
     }
 
+    /**
+     * How many resources are held by a live (non-expired) lease at {@code now} — the numerator of pool
+     * utilization. An expired lease still in the map (awaiting its next reclaim) is not counted, so the
+     * figure matches what {@link #isLeased} would report resource by resource. The scan runs over the
+     * concurrent map's weakly consistent view: it never blocks writers and is exact enough for a gauge
+     * sampled at each lease transition.
+     *
+     * @param now the current instant
+     * @return the number of resources currently leased
+     * @throws NullPointerException if {@code now} is null
+     */
+    public int activeCount(Instant now) {
+        Objects.requireNonNull(now, "now must not be null");
+        int live = 0;
+        for (Lease lease : active.values()) {
+            if (!lease.isExpired(now)) {
+                live++;
+            }
+        }
+        return live;
+    }
+
     private static void requirePositive(Duration ttl) {
         Objects.requireNonNull(ttl, "ttl must not be null");
         if (ttl.isZero() || ttl.isNegative()) {

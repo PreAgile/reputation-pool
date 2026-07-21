@@ -198,6 +198,10 @@ final class ProtoMapping {
                                 .setResource(toProto(released.resource()))
                                 .setContext(toProto(released.context())))
                         .build();
+            case PoolEvent.AcquisitionRejected rejected ->
+                builder.setRejected(AdvisorProto.PoolEvent.AcquisitionRejected.newBuilder()
+                                .setContext(toProto(rejected.context())))
+                        .build();
         };
     }
 

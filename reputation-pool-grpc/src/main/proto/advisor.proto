@@ -89,6 +89,7 @@ message PoolEvent {
     ResourceUnblocked unblocked = 5;
     ResourceLeased leased = 6;
     LeaseReleased lease_released = 7;
+    AcquisitionRejected rejected = 8;
   }
 
   message ResourceCooled {
@@ -127,6 +128,11 @@ message PoolEvent {
   message LeaseReleased {
     ResourceId resource = 1;
     Context context = 2;
+  }
+
+  // No resource: an acquire for this context found nothing eligible to lend.
+  message AcquisitionRejected {
+    Context context = 1;
   }
 }
 

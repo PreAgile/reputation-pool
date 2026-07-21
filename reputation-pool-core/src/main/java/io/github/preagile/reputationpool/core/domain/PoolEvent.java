@@ -131,4 +131,20 @@ public sealed interface PoolEvent {
             Objects.requireNonNull(at, "at must not be null");
         }
     }
+
+    /**
+     * An {@code acquire} for a context found no eligible resource, so no lease was granted. Alone among
+     * the events this one names no resource — there was none to lend — only the context the attempt was
+     * made for. Consumers count it to derive the acquisition rejection rate, and it supplies the
+     * denominator (attempts that failed) that the {@link ResourceLeased} stream alone cannot.
+     */
+    record AcquisitionRejected(Context context, Instant at) implements PoolEvent {
+        /**
+         * @throws NullPointerException if any component is null
+         */
+        public AcquisitionRejected {
+            Objects.requireNonNull(context, "context must not be null");
+            Objects.requireNonNull(at, "at must not be null");
+        }
+    }
 }

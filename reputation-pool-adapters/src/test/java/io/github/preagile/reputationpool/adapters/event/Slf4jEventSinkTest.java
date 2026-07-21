@@ -48,6 +48,9 @@ class Slf4jEventSinkTest {
                 .startsWith("leased");
         assertThat(Slf4jEventSink.format(new PoolEvent.LeaseReleased(RID, CTX, AT)))
                 .startsWith("released lease");
+        assertThat(Slf4jEventSink.format(new PoolEvent.AcquisitionRejected(CTX, AT)))
+                .startsWith("rejected acquire")
+                .contains("cpeats");
     }
 
     @Test
@@ -56,6 +59,8 @@ class Slf4jEventSinkTest {
         assertThat(Slf4jEventSink.isPerRequest(new PoolEvent.ResourceLeased(RID, CTX, AT, AT.plusSeconds(60))))
                 .isTrue();
         assertThat(Slf4jEventSink.isPerRequest(new PoolEvent.LeaseReleased(RID, CTX, AT)))
+                .isTrue();
+        assertThat(Slf4jEventSink.isPerRequest(new PoolEvent.AcquisitionRejected(CTX, AT)))
                 .isTrue();
         assertThat(Slf4jEventSink.isPerRequest(
                         new PoolEvent.ResourceCooled(RID, CTX, AT, AT.plusSeconds(60), FailureType.BLOCKED)))

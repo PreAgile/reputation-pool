@@ -211,7 +211,8 @@ public final class DomainArbitraries {
                         new PoolEvent.ResourceLeased(resource, context, at, at.plusNanos(offset)));
         Arbitrary<PoolEvent> released =
                 Combinators.combine(resources, contexts, ats).as(PoolEvent.LeaseReleased::new);
+        Arbitrary<PoolEvent> rejected = Combinators.combine(contexts, ats).as(PoolEvent.AcquisitionRejected::new);
 
-        return Arbitraries.oneOf(cooled, recovered, blocklisted, unblocked, leased, released);
+        return Arbitraries.oneOf(cooled, recovered, blocklisted, unblocked, leased, released, rejected);
     }
 }

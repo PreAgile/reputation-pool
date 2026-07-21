@@ -27,10 +27,12 @@ import io.github.preagile.reputationpool.core.domain.ResourceKind;
 import io.github.preagile.reputationpool.core.engine.AdaptiveCooldownPolicy;
 import io.github.preagile.reputationpool.core.engine.ReputationEngine;
 import io.github.preagile.reputationpool.core.port.EventSink;
+import io.github.preagile.reputationpool.core.port.MetricsSink;
 import io.github.preagile.reputationpool.core.testing.SettableClock;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.ZoneId;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -54,11 +56,13 @@ class ResourcePoolTest {
     }
 
     private final CollectingSink sink = new CollectingSink();
+    private final RecordingMetrics metrics = new RecordingMetrics();
 
     private ResourcePool poolAt(Clock clock) {
         // coolAfter = 3, recoverAfter = 2, windowSize = 10
         var engine = new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 3, 2);
-        return new ResourcePool(engine, new WeightedRandomSelectionStrategy(), sink, clock, new Random(1), TTL);
+        return new ResourcePool(
+                engine, new WeightedRandomSelectionStrategy(), sink, metrics, clock, new Random(1), TTL);
     }
 
     private static Clock fixed() {
@@ -244,6 +248,66 @@ class ResourcePoolTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> new ResourcePool(engine, strategy, sink, fixed(), random, Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new ResourcePool(engine, strategy, sink, null, fixed(), random, TTL))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("metrics");
+    }
+
+    // --- observability port: latency, lease occupancy, and the rejection event (#68) ---
+
+    @Test
+    void aFailedAcquireEmitsAcquisitionRejectedAndStillReportsMetrics() {
+        var pool = poolAt(fixed()); // nothing registered
+        assertThat(pool.acquire(CTX)).isEmpty();
+        assertThat(sink.events).hasAtLeastOneElementOfType(PoolEvent.AcquisitionRejected.class);
+        assertThat(metrics.latencies).isNotEmpty(); // latency is reported even when nothing is lent
+        assertThat(metrics.lastLeased).isZero();
+        assertThat(metrics.lastRegistered).isZero();
+    }
+
+    @Test
+    void aGrantedAcquireDoesNotEmitAcquisitionRejected() {
+        var pool = poolAt(fixed());
+        pool.register(proxy("p1"));
+        assertThat(pool.acquire(CTX)).isPresent();
+        assertThat(sink.events).noneMatch(event -> event instanceof PoolEvent.AcquisitionRejected);
+    }
+
+    @Test
+    void acquireAndReleaseReportLeaseOccupancyAtEachTransition() {
+        var pool = poolAt(fixed());
+        pool.register(proxy("p1"));
+        pool.register(proxy("p2"));
+
+        var lease = pool.acquire(CTX).orElseThrow();
+        assertThat(metrics.lastLeased).isEqualTo(1);
+        assertThat(metrics.lastRegistered).isEqualTo(2);
+
+        pool.acquire(CTX);
+        assertThat(metrics.lastLeased).isEqualTo(2);
+
+        pool.release(lease);
+        assertThat(metrics.lastLeased).isEqualTo(1);
+        assertThat(metrics.lastRegistered).isEqualTo(2);
+    }
+
+    @Test
+    void acquireReportsLatencyMeasuredOnTheInjectedClock() {
+        // acquire reads the clock exactly twice — once at entry, once to close the measurement — so a
+        // clock that steps by a fixed amount per read makes the reported latency deterministic
+        var pool = poolAt(new TickingClock(NOW, Duration.ofMillis(50)));
+        pool.register(proxy("p1"));
+        pool.acquire(CTX);
+        assertThat(metrics.latencies).containsExactly(Duration.ofMillis(50).toNanos());
+    }
+
+    @Test
+    void metricsDefaultToNoOpWhenLeftUnwired() {
+        // the six-arg constructor omits the metrics port; a pool built that way must still run
+        var engine = new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 3, 2);
+        var pool = new ResourcePool(engine, new WeightedRandomSelectionStrategy(), sink, fixed(), new Random(1), TTL);
+        pool.register(proxy("p1"));
+        assertThat(pool.acquire(CTX)).isPresent(); // no metrics wired, no failure
     }
 
     @Test
@@ -335,6 +399,52 @@ class ResourcePoolTest {
         @Override
         public void emit(PoolEvent event) {
             events.add(event);
+        }
+    }
+
+    /** A {@link MetricsSink} that records each reported latency and the latest lease-occupancy sample. */
+    private static final class RecordingMetrics implements MetricsSink {
+        private final List<Long> latencies = new CopyOnWriteArrayList<>();
+        private volatile int lastLeased;
+        private volatile int lastRegistered;
+
+        @Override
+        public void acquisitionLatency(long nanos) {
+            latencies.add(nanos);
+        }
+
+        @Override
+        public void leaseOccupancy(int leased, int registered) {
+            this.lastLeased = leased;
+            this.lastRegistered = registered;
+        }
+    }
+
+    /** A {@link Clock} that steps forward by a fixed amount on every read, so elapsed time is exact. */
+    private static final class TickingClock extends Clock {
+        private Instant now;
+        private final Duration step;
+
+        private TickingClock(Instant start, Duration step) {
+            this.now = start;
+            this.step = step;
+        }
+
+        @Override
+        public Instant instant() {
+            Instant reading = now;
+            now = now.plus(step);
+            return reading;
+        }
+
+        @Override
+        public ZoneId getZone() {
+            return ZoneOffset.UTC;
+        }
+
+        @Override
+        public Clock withZone(ZoneId zone) {
+            return this;
         }
     }
 }

@@ -67,6 +67,7 @@ class PoolEventTest {
         assertThat(describe(new PoolEvent.ResourceLeased(RID, CTX, AT, AT.plusSeconds(60))))
                 .isEqualTo("leased");
         assertThat(describe(new PoolEvent.LeaseReleased(RID, CTX, AT))).isEqualTo("leaseReleased");
+        assertThat(describe(new PoolEvent.AcquisitionRejected(CTX, AT))).isEqualTo("rejected");
     }
 
     private static String describe(PoolEvent event) {
@@ -77,6 +78,7 @@ class PoolEventTest {
             case PoolEvent.ResourceUnblocked u -> "unblocked";
             case PoolEvent.ResourceLeased l -> "leased";
             case PoolEvent.LeaseReleased r -> "leaseReleased";
+            case PoolEvent.AcquisitionRejected r -> "rejected";
         };
     }
 
@@ -143,6 +145,23 @@ class PoolEventTest {
 
         assertThat(new PoolEvent.ResourceUnblocked(RID, AT).at()).isEqualTo(AT);
         assertThat(new PoolEvent.LeaseReleased(RID, CTX, AT).context()).isEqualTo(CTX);
+    }
+
+    @Test
+    void acquisitionRejectedHoldsItsContextAndTimeButNamesNoResource() {
+        var rejected = new PoolEvent.AcquisitionRejected(CTX, AT);
+        assertThat(rejected.context()).isEqualTo(CTX);
+        assertThat(rejected.at()).isEqualTo(AT);
+    }
+
+    @Test
+    void acquisitionRejectedRejectsNullComponents() {
+        assertThatThrownBy(() -> new PoolEvent.AcquisitionRejected(null, AT))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("context");
+        assertThatThrownBy(() -> new PoolEvent.AcquisitionRejected(CTX, null))
+                .isInstanceOf(NullPointerException.class)
+                .hasMessageContaining("at");
     }
 
     @Test

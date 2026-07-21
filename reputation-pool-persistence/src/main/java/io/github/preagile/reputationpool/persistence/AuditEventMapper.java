@@ -30,8 +30,9 @@ import java.time.Instant;
  *
  * <p>The sealed {@link PoolEvent} cases collapse into one wide row: an {@code eventType} discriminator
  * plus nullable columns for the fields not every case carries ({@code context}, {@code until},
- * {@code cause}). Both directions {@code switch} exhaustively, so adding a {@code PoolEvent} case is a
- * compile error here until the new row shape is decided.
+ * {@code cause}, and — for the resource-less {@code AcquisitionRejected} — {@code resource_kind} and
+ * {@code resource_value}). Both directions {@code switch} exhaustively, so adding a {@code PoolEvent}
+ * case is a compile error here until the new row shape is decided.
  *
  * <p>Representation choices are inherited from the snapshot schema and reused via
  * {@link SnapshotMapper}'s helpers: instants travel as lossless epoch-nanosecond {@code bigint}, and a
@@ -113,6 +114,18 @@ final class AuditEventMapper {
                         SnapshotMapper.instantToEpochNanos(e.at()),
                         null,
                         null);
+            case PoolEvent.AcquisitionRejected e ->
+                // the only resource-less case: no resource was leased, so resource_kind/resource_value
+                // are NULL (V4 relaxed their NOT NULL), the same "column a case does not carry is NULL"
+                // shape the wide table already uses for context/until/cause
+                new AuditRow(
+                        "ACQUISITION_REJECTED",
+                        null,
+                        null,
+                        e.context().value(),
+                        SnapshotMapper.instantToEpochNanos(e.at()),
+                        null,
+                        null);
         };
     }
 
@@ -123,29 +136,35 @@ final class AuditEventMapper {
      * @throws IllegalArgumentException if {@code eventType} is not a known case name
      */
     static PoolEvent toEvent(AuditRow row) {
-        ResourceId resource = new ResourceId(ResourceKind.valueOf(row.resourceKind()), row.resourceValue());
         Instant at = SnapshotMapper.epochNanosToInstant(row.occurredAtNanos());
         return switch (row.eventType()) {
             case "RESOURCE_COOLED" ->
                 new PoolEvent.ResourceCooled(
-                        resource,
+                        resourceOf(row),
                         new Context(row.context()),
                         at,
                         SnapshotMapper.epochNanosToBlocklistUntil(row.untilNanos()),
                         FailureType.valueOf(row.cause()));
-            case "RESOURCE_RECOVERED" -> new PoolEvent.ResourceRecovered(resource, new Context(row.context()), at);
+            case "RESOURCE_RECOVERED" ->
+                new PoolEvent.ResourceRecovered(resourceOf(row), new Context(row.context()), at);
             case "RESOURCE_BLOCKLISTED" ->
                 new PoolEvent.ResourceBlocklisted(
-                        resource, at, SnapshotMapper.epochNanosToBlocklistUntil(row.untilNanos()));
-            case "RESOURCE_UNBLOCKED" -> new PoolEvent.ResourceUnblocked(resource, at);
+                        resourceOf(row), at, SnapshotMapper.epochNanosToBlocklistUntil(row.untilNanos()));
+            case "RESOURCE_UNBLOCKED" -> new PoolEvent.ResourceUnblocked(resourceOf(row), at);
             case "RESOURCE_LEASED" ->
                 new PoolEvent.ResourceLeased(
-                        resource,
+                        resourceOf(row),
                         new Context(row.context()),
                         at,
                         SnapshotMapper.epochNanosToBlocklistUntil(row.untilNanos()));
-            case "LEASE_RELEASED" -> new PoolEvent.LeaseReleased(resource, new Context(row.context()), at);
+            case "LEASE_RELEASED" -> new PoolEvent.LeaseReleased(resourceOf(row), new Context(row.context()), at);
+            // resource-less by construction: the row's resource columns are NULL, so it names only a context
+            case "ACQUISITION_REJECTED" -> new PoolEvent.AcquisitionRejected(new Context(row.context()), at);
             default -> throw new IllegalArgumentException("unknown audit event type: " + row.eventType());
         };
+    }
+
+    private static ResourceId resourceOf(AuditRow row) {
+        return new ResourceId(ResourceKind.valueOf(row.resourceKind()), row.resourceValue());
     }
 }
