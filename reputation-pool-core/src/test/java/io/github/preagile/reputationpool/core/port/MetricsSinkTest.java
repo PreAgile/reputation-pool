@@ -37,4 +37,24 @@ class MetricsSinkTest {
         // the default sink holds no state, so an assembly can reuse the one instance
         assertThat(MetricsSink.noop()).isSameAs(MetricsSink.noop());
     }
+
+    @Test
+    void noopReportsItselfDisabled() {
+        // the pool checks isEnabled() to skip the O(active-leases) occupancy scan; the no-op sink says
+        // false so an assembly that wires no adapter never pays it
+        assertThat(MetricsSink.noop().isEnabled()).isFalse();
+    }
+
+    @Test
+    void aRecordingSinkIsEnabledByDefault() {
+        // a real adapter only implements the two report methods; the default keeps it enabled
+        MetricsSink recording = new MetricsSink() {
+            @Override
+            public void acquisitionLatency(long nanos) {}
+
+            @Override
+            public void leaseOccupancy(int leased, int registered) {}
+        };
+        assertThat(recording.isEnabled()).isTrue();
+    }
 }

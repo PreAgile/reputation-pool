@@ -53,6 +53,18 @@ public interface MetricsSink {
     void leaseOccupancy(int leased, int registered);
 
     /**
+     * Whether this sink records anything. The pool checks it to skip work that only feeds metrics —
+     * notably the O(active-leases) scan behind {@link #leaseOccupancy} — when no adapter is wired, so
+     * adding this port costs a no-metrics assembly nothing on the acquire/release hot path. A real
+     * adapter leaves the default {@code true}.
+     *
+     * @return {@code true} if measurements are recorded; {@code false} for a sink that drops them
+     */
+    default boolean isEnabled() {
+        return true;
+    }
+
+    /**
      * A sink that discards every measurement — the default an assembly gets when it wires no metrics
      * adapter, so adding this port breaks no existing composition.
      *
@@ -65,6 +77,11 @@ public interface MetricsSink {
     /** The no-op default: every measurement is dropped, letting a pool run without a metrics adapter. */
     enum NoOp implements MetricsSink {
         INSTANCE;
+
+        @Override
+        public boolean isEnabled() {
+            return false;
+        }
 
         @Override
         public void acquisitionLatency(long nanos) {

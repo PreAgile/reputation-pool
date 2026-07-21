@@ -159,16 +159,23 @@ public final class ResourcePool {
         Objects.requireNonNull(context, "context must not be null");
         Instant startedAt = clock.instant();
         Optional<Lease> lease = claim(context, startedAt);
-        // Latency is measured on the same injected clock the rest of the pool reads, not on a separate
-        // wall-clock source, so tests drive it deterministically; clamp at zero so a non-monotonic
-        // clock stepping back never reports a negative duration.
-        long latencyNanos =
-                Math.max(0L, Duration.between(startedAt, clock.instant()).toNanos());
-        metrics.acquisitionLatency(latencyNanos);
+        // Only touch the metrics path when a sink actually records: leaseOccupancy's argument is an
+        // O(active-leases) scan, and the default noop() sink (what every existing assembly gets) must not
+        // make each acquire pay it. The rejection below is an event, not a metric, so it always fires.
+        if (metrics.isEnabled()) {
+            // Latency is measured on the same injected clock the rest of the pool reads, not on a
+            // separate wall-clock source, so tests drive it deterministically; clamp at zero so a
+            // non-monotonic clock stepping back never reports a negative duration.
+            long latencyNanos =
+                    Math.max(0L, Duration.between(startedAt, clock.instant()).toNanos());
+            metrics.acquisitionLatency(latencyNanos);
+        }
         if (lease.isEmpty()) {
             events.emit(new PoolEvent.AcquisitionRejected(context, startedAt));
         }
-        metrics.leaseOccupancy(leases.activeCount(startedAt), registered.size());
+        if (metrics.isEnabled()) {
+            metrics.leaseOccupancy(leases.activeCount(startedAt), registered.size());
+        }
         return lease;
     }
 
@@ -268,8 +275,11 @@ public final class ResourcePool {
         if (released) {
             Instant now = clock.instant();
             events.emit(new PoolEvent.LeaseReleased(lease.resource(), lease.context(), now));
-            // a release is the other lease transition (an acquire is the first), so resample the gauge
-            metrics.leaseOccupancy(leases.activeCount(now), registered.size());
+            // a release is the other lease transition (an acquire is the first), so resample the gauge —
+            // guarded so the default noop() sink never pays the activeCount() scan
+            if (metrics.isEnabled()) {
+                metrics.leaseOccupancy(leases.activeCount(now), registered.size());
+            }
         }
         return released;
     }
