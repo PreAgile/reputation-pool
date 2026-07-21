@@ -55,6 +55,7 @@ public final class Slf4jEventSink implements EventSink {
         return switch (event) {
             case PoolEvent.ResourceLeased e -> true;
             case PoolEvent.LeaseReleased e -> true;
+            case PoolEvent.AcquisitionRejected e -> true;
             case PoolEvent.ResourceCooled e -> false;
             case PoolEvent.ResourceRecovered e -> false;
             case PoolEvent.ResourceBlocklisted e -> false;
@@ -72,6 +73,7 @@ public final class Slf4jEventSink implements EventSink {
             case PoolEvent.ResourceUnblocked e -> "unblocked " + e.resource();
             case PoolEvent.ResourceLeased e -> "leased " + e.resource() + " for " + e.context() + " until " + e.until();
             case PoolEvent.LeaseReleased e -> "released lease on " + e.resource() + " for " + e.context();
+            case PoolEvent.AcquisitionRejected e -> "rejected acquire for " + e.context();
         };
     }
 }

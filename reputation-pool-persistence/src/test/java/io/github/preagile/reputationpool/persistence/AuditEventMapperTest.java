@@ -117,6 +117,19 @@ class AuditEventMapperTest {
             assertThat(row.context()).isEqualTo("marketplace-a");
             assertThat(row.untilNanos()).isNull();
         }
+
+        @Test
+        @DisplayName("AcquisitionRejected carries a context but no resource, until, or cause")
+        void acquisitionRejected() {
+            AuditRow row = AuditEventMapper.toRow(new PoolEvent.AcquisitionRejected(CTX, AT));
+
+            assertThat(row.eventType()).isEqualTo("ACQUISITION_REJECTED");
+            assertThat(row.resourceKind()).isNull();
+            assertThat(row.resourceValue()).isNull();
+            assertThat(row.context()).isEqualTo("marketplace-a");
+            assertThat(row.untilNanos()).isNull();
+            assertThat(row.cause()).isNull();
+        }
     }
 
     @Nested
@@ -133,6 +146,7 @@ class AuditEventMapperTest {
                 new PoolEvent.ResourceUnblocked(RID, AT),
                 new PoolEvent.ResourceLeased(RID, CTX, AT, UNTIL),
                 new PoolEvent.LeaseReleased(RID, CTX, AT),
+                new PoolEvent.AcquisitionRejected(CTX, AT),
             };
             for (PoolEvent event : all) {
                 assertThat(AuditEventMapper.toEvent(AuditEventMapper.toRow(event)))

@@ -118,6 +118,9 @@ class ProtoMappingTest {
         assertThat(ProtoMapping.toProto(new PoolEvent.LeaseReleased(res, ctx, AT))
                         .getEventCase())
                 .isEqualTo(AdvisorProto.PoolEvent.EventCase.LEASE_RELEASED);
+        assertThat(ProtoMapping.toProto(new PoolEvent.AcquisitionRejected(ctx, AT))
+                        .getEventCase())
+                .isEqualTo(AdvisorProto.PoolEvent.EventCase.REJECTED);
     }
 
     @Test
@@ -183,6 +186,16 @@ class ProtoMappingTest {
         assertThat(ProtoMapping.toDomain(proto.getLeaseReleased().getResource()))
                 .isEqualTo(res);
         assertThat(ProtoMapping.toDomain(proto.getLeaseReleased().getContext())).isEqualTo(ctx);
+    }
+
+    @Test
+    void aRejectedEventCarriesItsContextAcrossTheWireWithNoResource() {
+        Context ctx = new Context("marketplace-f");
+
+        AdvisorProto.PoolEvent proto = ProtoMapping.toProto(new PoolEvent.AcquisitionRejected(ctx, AT));
+
+        assertThat(proto.getAt().getSeconds()).isEqualTo(AT.getEpochSecond());
+        assertThat(ProtoMapping.toDomain(proto.getRejected().getContext())).isEqualTo(ctx);
     }
 
     // ---------- permanence crosses the wire as structure, not as a timestamp sentinel ----------

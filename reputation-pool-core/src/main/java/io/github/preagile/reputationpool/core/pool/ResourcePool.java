@@ -26,6 +26,7 @@ import io.github.preagile.reputationpool.core.domain.ResourceId;
 import io.github.preagile.reputationpool.core.domain.ResourceState;
 import io.github.preagile.reputationpool.core.engine.ReputationEngine;
 import io.github.preagile.reputationpool.core.port.EventSink;
+import io.github.preagile.reputationpool.core.port.MetricsSink;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
@@ -48,7 +49,10 @@ import java.util.random.RandomGenerator;
  * <p>Everything beneath it was built pure or self-contained so it could be tested in isolation; this
  * facade is where they connect and where side effects enter. It is the one place that reads the
  * {@link Clock} (deriving the {@code now} it passes down), draws from the injected
- * {@link RandomGenerator} for selection, and pushes {@link PoolEvent}s to the {@link EventSink} port.
+ * {@link RandomGenerator} for selection, pushes {@link PoolEvent}s to the {@link EventSink} port, and
+ * reports acquisition latency and lease occupancy to the {@link MetricsSink} port. The metrics port is
+ * the continuous-measurement sibling of the discrete {@link EventSink}; both default to a no-op so an
+ * assembly can leave either unwired.
  *
  * <p>It owns the layer's three pieces of shared state, each with its own atomic discipline: the
  * reputation cells in a {@link ConcurrentHashMap} updated by per-key {@code compute}; the blocklist
@@ -69,11 +73,15 @@ public final class ResourcePool {
     private final ReputationEngine engine;
     private final SelectionStrategy strategy;
     private final EventSink events;
+    private final MetricsSink metrics;
     private final Clock clock;
     private final RandomGenerator random;
     private final Duration leaseTtl;
 
     /**
+     * Assembles a pool that reports events but no metrics — the metrics port defaults to
+     * {@link MetricsSink#noop()}, so an existing assembly keeps working without wiring it.
+     *
      * @param engine the reputation decision function
      * @param strategy how to choose among eligible candidates
      * @param events where pool events are emitted
@@ -90,9 +98,35 @@ public final class ResourcePool {
             Clock clock,
             RandomGenerator random,
             Duration leaseTtl) {
+        this(engine, strategy, events, MetricsSink.noop(), clock, random, leaseTtl);
+    }
+
+    /**
+     * Assembles a pool that reports both events and metrics.
+     *
+     * @param engine the reputation decision function
+     * @param strategy how to choose among eligible candidates
+     * @param events where pool events are emitted
+     * @param metrics where acquisition latency and lease occupancy are reported; use
+     *     {@link MetricsSink#noop()} to discard them
+     * @param clock the source of {@code now}; use {@code Clock.fixed(...)} in tests
+     * @param random the source of randomness for selection; seed it in tests for reproducibility
+     * @param leaseTtl how long a granted lease stays valid before the expiry safety net reclaims it
+     * @throws NullPointerException if any reference argument is null
+     * @throws IllegalArgumentException if {@code leaseTtl} is zero or negative
+     */
+    public ResourcePool(
+            ReputationEngine engine,
+            SelectionStrategy strategy,
+            EventSink events,
+            MetricsSink metrics,
+            Clock clock,
+            RandomGenerator random,
+            Duration leaseTtl) {
         this.engine = Objects.requireNonNull(engine, "engine must not be null");
         this.strategy = Objects.requireNonNull(strategy, "strategy must not be null");
         this.events = Objects.requireNonNull(events, "events must not be null");
+        this.metrics = Objects.requireNonNull(metrics, "metrics must not be null");
         this.clock = Objects.requireNonNull(clock, "clock must not be null");
         this.random = Objects.requireNonNull(random, "random must not be null");
         requirePositive(leaseTtl);
@@ -113,7 +147,9 @@ public final class ResourcePool {
     /**
      * Leases one registered resource for {@code context}: a resource that is not blocklisted, not
      * already leased, and in a selectable state ({@code HEALTHY} or {@code RECOVERING}), chosen by the
-     * strategy and weighted by reputation. Emits {@link PoolEvent.ResourceLeased} on success.
+     * strategy and weighted by reputation. Emits {@link PoolEvent.ResourceLeased} on success and
+     * {@link PoolEvent.AcquisitionRejected} when nothing is available, and reports the call's latency
+     * and the resulting lease occupancy to the {@link MetricsSink}.
      *
      * @param context the context to lease for
      * @return the granted lease, or {@link Optional#empty()} if nothing is available
@@ -121,7 +157,30 @@ public final class ResourcePool {
      */
     public Optional<Lease> acquire(Context context) {
         Objects.requireNonNull(context, "context must not be null");
-        Instant now = clock.instant();
+        Instant startedAt = clock.instant();
+        Optional<Lease> lease = claim(context, startedAt);
+        // Only touch the metrics path when a sink actually records: leaseOccupancy's argument is an
+        // O(active-leases) scan, and the default noop() sink (what every existing assembly gets) must not
+        // make each acquire pay it. The rejection below is an event, not a metric, so it always fires.
+        if (metrics.isEnabled()) {
+            // Latency is measured on the same injected clock the rest of the pool reads, not on a
+            // separate wall-clock source, so tests drive it deterministically; clamp at zero so a
+            // non-monotonic clock stepping back never reports a negative duration.
+            long latencyNanos =
+                    Math.max(0L, Duration.between(startedAt, clock.instant()).toNanos());
+            metrics.acquisitionLatency(latencyNanos);
+        }
+        if (lease.isEmpty()) {
+            events.emit(new PoolEvent.AcquisitionRejected(context, startedAt));
+        }
+        if (metrics.isEnabled()) {
+            metrics.leaseOccupancy(leases.activeCount(startedAt), registered.size());
+        }
+        return lease;
+    }
+
+    /** The selection-and-claim core of {@link #acquire}, returning the lease or empty at {@code now}. */
+    private Optional<Lease> claim(Context context, Instant now) {
         Blocklist currentBlocklist = blocklist.get();
 
         var candidates = new ArrayList<ReputationCell>();
@@ -214,7 +273,13 @@ public final class ResourcePool {
         Objects.requireNonNull(lease, "lease must not be null");
         boolean released = leases.release(lease.resource(), lease.token());
         if (released) {
-            events.emit(new PoolEvent.LeaseReleased(lease.resource(), lease.context(), clock.instant()));
+            Instant now = clock.instant();
+            events.emit(new PoolEvent.LeaseReleased(lease.resource(), lease.context(), now));
+            // a release is the other lease transition (an acquire is the first), so resample the gauge —
+            // guarded so the default noop() sink never pays the activeCount() scan
+            if (metrics.isEnabled()) {
+                metrics.leaseOccupancy(leases.activeCount(now), registered.size());
+            }
         }
         return released;
     }
