@@ -15,6 +15,23 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-22
+
+The gRPC event stream can now be scoped per pool, completing the upstream side of
+reputation-pool-cloud's per-tenant event isolation. Additive (a minor): the reference server and any
+existing subclass keep their single-pool behaviour under the `default` pool.
+
+### Added
+
+- **`ReputationAdvisorService.subscriptionPoolId()` seam** (`reputation-pool-grpc`) — a `protected
+  String subscriptionPoolId()` hook, the streaming counterpart of `pool()`. `subscribeEvents` now
+  registers via `broadcaster.subscribe(subscriptionPoolId(), observer)`; the default returns
+  `"default"`, and a multi-tenant host overrides it (resolving the pool from the tenant on the gRPC
+  context) so a subscriber receives only its own pool's events — without re-implementing
+  `subscribeEvents` or exposing the package-private `subscribe(poolId, observer)`. Pairs with
+  `EventBroadcaster.forPool` (0.4.0) to close cross-tenant event-stream leakage. The proto is
+  unchanged. (#77)
+
 ## [0.4.0] - 2026-07-22
 
 Per-tenant audit trail and event stream — the upstream half of reputation-pool-cloud's multi-tenant
