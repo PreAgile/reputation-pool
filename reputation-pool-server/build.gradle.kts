@@ -31,7 +31,7 @@ mavenPublishing {
 
 // Matches the reputation-pool-grpc baseline so the reference host runs on the same gRPC transport
 // version as the published stubs.
-val grpcVersion = "1.63.0"
+val grpcVersion = "1.82.2"
 
 dependencies {
     // The server ring depends inward on the pure core; the dependency arrow never points the other way.
