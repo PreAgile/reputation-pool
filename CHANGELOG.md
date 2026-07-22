@@ -15,7 +15,42 @@ aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
-## [0.3.1] - Unreleased
+## [0.4.0] - 2026-07-22
+
+Per-tenant audit trail and event stream — the upstream half of reputation-pool-cloud's multi-tenant
+isolation — plus dependency currency and a security fix. Additive (hence a minor): existing
+single-pool consumers keep working under the `default` pool id, and the gRPC/proto contract is
+unchanged.
+
+### Added
+
+- **`audit_event.pool_id`** (`reputation-pool-persistence`, `V5__audit_pool_id.sql`) — an additive
+  `pool_id text NOT NULL DEFAULT 'default'` backfilling every existing row, plus an
+  `audit_event_pool_seq_idx (pool_id, seq)` index for pool-scoped keyset paging. No primary key is
+  redefined — the append-only IDENTITY `seq` is already globally unique across pools. (#74)
+- **`PostgresAuditTrail.forPool(String)`** — an `EventSink` view that tags every appended row with a
+  pool id, sharing the trail's one queue, writer thread, and dropped counter. The bare `emit` still
+  appends under `default`; the pool id travels as wiring (who emitted), never as a field on the
+  pool-agnostic `PoolEvent`, mirroring the per-tenant sink pattern. (#74)
+- **`EventBroadcaster.forPool(String)`** and pool-scoped subscriptions — an event emitted for one pool
+  is fanned out only to that pool's subscribers, so a multi-tenant host's `SubscribeEvents` streams no
+  longer leak across tenants. The bare `emit`/`subscribe` stay on `default`; the proto is unchanged
+  (subscription tenancy is a server-side decision, never on the wire). (#74)
+
+### Changed
+
+- **protobuf-java 3.25.1 → 3.25.8** (`reputation-pool-grpc`) — matches the protobuf-java that
+  grpc-protobuf 1.82.2 resolves, and stays on the 3.25.x LTS line deliberately (a 4.26+ gencode would
+  embed a runtime-version check that breaks downstream hosts pinned to an older protobuf). (#75)
+- **gRPC 1.63.0 → 1.82.2**, **Flyway 12.11.0 → 13.0.0**, and a group of minor/patch dependency
+  updates. (#70, #72, #73)
+
+### Security
+
+- **CVE-2024-7254** (protobuf-java, High — unbounded-recursion DoS on untrusted messages, fixed
+  upstream in 3.25.5) remediated via the protobuf-java 3.25.8 bump. (#75)
+
+## [0.3.1] - 2026-07-17
 
 Per-pool state isolation, so one PostgreSQL database can hold many independent pools — the upstream
 half of reputation-pool-cloud's multi-tenant pool isolation. A backward-compatible, additive change
