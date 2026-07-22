@@ -26,7 +26,7 @@ repositories {
 // reference server and any downstream host). protobuf 3.x avoids the 4.x runtime break, so a host
 // pinned to an older gRPC/protobuf (e.g. via a Spring gRPC starter) can consume these stubs as-is.
 val grpcVersion = "1.82.2"
-val protobufVersion = "3.25.1"
+val protobufVersion = "4.35.1"
 
 // Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
 // this module's coordinates, name, and description live here.
