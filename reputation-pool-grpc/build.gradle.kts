@@ -23,10 +23,14 @@ repositories {
 }
 
 // Conservative, widely-compatible baseline shared by every consumer of this contract module (the
-// reference server and any downstream host). protobuf 3.x avoids the 4.x runtime break, so a host
-// pinned to an older gRPC/protobuf (e.g. via a Spring gRPC starter) can consume these stubs as-is.
+// reference server and any downstream host). Staying on protobuf 3.25.x (the LTS line grpc-java itself
+// still resolves to, supported through 2027-03) keeps the generated stubs free of the poison-pill
+// gencode-vs-runtime check that protobuf-java 4.26+ embeds, so a host pinned to an older gRPC/protobuf
+// (e.g. via a Spring gRPC starter) can still consume these stubs as-is. 3.25.8 is the current 3.25.x
+// patch: it carries the CVE-2024-7254 fix (unbounded-recursion DoS on untrusted messages, fixed in
+// 3.25.5) and matches the protobuf-java that grpc-protobuf 1.82.2 pulls in transitively.
 val grpcVersion = "1.82.2"
-val protobufVersion = "3.25.1"
+val protobufVersion = "3.25.8"
 
 // Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
 // this module's coordinates, name, and description live here.
