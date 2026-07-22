@@ -203,6 +203,56 @@ class ReputationAdvisorServiceTest {
         assertThat(events.received.get(0).getEventCase()).isEqualTo(AdvisorProto.PoolEvent.EventCase.LEASE_RELEASED);
     }
 
+    @Test
+    void aSubscriptionIsScopedToSubscriptionPoolIdSoItSeesOnlyItsPoolsEvents() throws IOException {
+        // A host that emits this pool's events under "t1" and overrides subscriptionPoolId() to "t1".
+        // If subscribeEvents ignored the seam and subscribed under "default", the subscriber would see
+        // nothing (the pool emits under "t1"), so observing the events proves the seam routes the stream.
+        EventBroadcaster scopedBroadcaster = new EventBroadcaster();
+        ResourcePool t1Pool = new ResourcePool(
+                new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 2, 2),
+                new WeightedRandomSelectionStrategy(),
+                scopedBroadcaster.forPool("t1"),
+                Clock.fixed(NOW, ZoneOffset.UTC),
+                new Random(42),
+                Duration.ofSeconds(30));
+        String name = InProcessServerBuilder.generateName();
+        Server scopedServer = InProcessServerBuilder.forName(name)
+                .directExecutor()
+                .addService(new ReputationAdvisorService(t1Pool, scopedBroadcaster) {
+                    @Override
+                    protected String subscriptionPoolId() {
+                        return "t1";
+                    }
+                })
+                .build()
+                .start();
+        ManagedChannel scopedChannel =
+                InProcessChannelBuilder.forName(name).directExecutor().build();
+        try {
+            ReputationAdvisorGrpc.ReputationAdvisorBlockingStub t1Blocking =
+                    ReputationAdvisorGrpc.newBlockingStub(scopedChannel);
+            ReputationAdvisorGrpc.ReputationAdvisorStub t1Async = ReputationAdvisorGrpc.newStub(scopedChannel);
+
+            RecordingObserver events = new RecordingObserver();
+            t1Async.subscribeEvents(AdvisorProto.SubscribeEventsRequest.getDefaultInstance(), events);
+
+            t1Blocking.register(registerRequest("p1"));
+            AdvisorProto.LeaseHandle handle =
+                    t1Blocking.acquire(acquireRequest("marketplace-a")).getLease();
+            t1Blocking.release(
+                    AdvisorProto.ReleaseRequest.newBuilder().setLease(handle).build());
+
+            assertThat(events.received).hasSize(2);
+            assertThat(events.received.get(0).getEventCase()).isEqualTo(AdvisorProto.PoolEvent.EventCase.LEASED);
+            assertThat(events.received.get(1).getEventCase())
+                    .isEqualTo(AdvisorProto.PoolEvent.EventCase.LEASE_RELEASED);
+        } finally {
+            scopedChannel.shutdownNow();
+            scopedServer.shutdownNow();
+        }
+    }
+
     // ---------- helpers ----------
 
     private static AdvisorProto.RegisterRequest registerRequest(String id) {
