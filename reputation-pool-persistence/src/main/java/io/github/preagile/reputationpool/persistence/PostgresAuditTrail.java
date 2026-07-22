@@ -94,9 +94,9 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
 
     private static final String INSERT_EVENT =
             """
-            INSERT INTO audit_event (event_type, resource_kind, resource_value, context, occurred_at,
-                until, cause)
-            VALUES (?, ?, ?, ?, ?, ?, ?)""";
+            INSERT INTO audit_event (pool_id, event_type, resource_kind, resource_value, context,
+                occurred_at, until, cause)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""";
 
     /**
      * The fetch half of a purge round: the head of the ledger, in {@code seq} order. A pure
@@ -121,10 +121,20 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
 
     /** The seam between the queue/writer machinery and JDBC, so the machinery tests need no database. */
     interface BatchWriter {
-        void write(List<PoolEvent> batch);
+        void write(List<Scoped> batch);
     }
 
-    private final BlockingQueue<PoolEvent> queue;
+    /**
+     * A queued event together with the pool that emitted it. poolId (the tenant) is not part of a
+     * {@link PoolEvent} — the core stays pool-agnostic — so it rides alongside the event through the one
+     * shared queue, mirroring cloud's {@code TenantMeteringSink}: which pool an event belongs to is a
+     * fact of <em>who emitted it</em> (see {@link #forPool(String)}), threaded here as wiring rather
+     * than baked into the domain type. Package-private so the {@link BatchWriter}-seam tests can read
+     * what was queued.
+     */
+    record Scoped(String poolId, PoolEvent event) {}
+
+    private final BlockingQueue<Scoped> queue;
     private final AtomicLong dropped = new AtomicLong();
     private final Thread writer;
     private final Duration closeTimeout;
@@ -215,12 +225,40 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
                 .start(() -> writeLoop(batchWriter));
     }
 
-    /** Enqueues the event for the background writer; drops (and counts) instead of ever blocking. */
+    /**
+     * Enqueues the event under the default pool for the background writer; drops (and counts) instead
+     * of ever blocking. The trail is itself a valid pool-unaware {@link EventSink} — the reference
+     * server, a single pool, writes through it directly — and everything it emits lands under
+     * {@code 'default'}, the same convention V3 set for pool-unaware snapshot writers.
+     */
     @Override
     public void emit(PoolEvent event) {
         Objects.requireNonNull(event, "event must not be null");
+        enqueue(new Scoped("default", event));
+    }
+
+    /**
+     * A view of this trail bound to one pool: the returned {@link EventSink} enqueues everything it
+     * receives under {@code poolId}, sharing this trail's one queue, writer thread, and dropped
+     * counter. This is how a multi-tenant host gives each pool its own audit identity without a queue
+     * or a writer per tenant — the poolId travels as wiring (who emitted), mirroring cloud's
+     * {@code TenantMeteringSink}, never as a field on the pool-agnostic {@link PoolEvent}.
+     *
+     * @param poolId the pool every event emitted through the returned sink is attributed to; never null
+     * @return an {@link EventSink} that appends to this trail under {@code poolId}
+     */
+    public EventSink forPool(String poolId) {
+        Objects.requireNonNull(poolId, "poolId must not be null");
+        return event -> {
+            Objects.requireNonNull(event, "event must not be null");
+            enqueue(new Scoped(poolId, event));
+        };
+    }
+
+    /** The one enqueue path: non-blocking offer, drop-and-count on overflow or after close(). */
+    private void enqueue(Scoped scoped) {
         synchronized (emitLock) {
-            if (!running || !queue.offer(event)) {
+            if (!running || !queue.offer(scoped)) {
                 dropped.incrementAndGet();
             }
         }
@@ -344,7 +382,7 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
             if (!writer.join(closeTimeout)) {
                 writer.interrupt();
                 writer.join(closeTimeout);
-                List<PoolEvent> abandoned = new ArrayList<>();
+                List<Scoped> abandoned = new ArrayList<>();
                 queue.drainTo(abandoned);
                 dropped.addAndGet(abandoned.size());
             }
@@ -359,10 +397,10 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
      * is empty, which is what makes close() lossless for accepted events.
      */
     private void writeLoop(BatchWriter batchWriter) {
-        List<PoolEvent> batch = new ArrayList<>(MAX_BATCH_SIZE);
+        List<Scoped> batch = new ArrayList<>(MAX_BATCH_SIZE);
         while (running || !queue.isEmpty()) {
             try {
-                PoolEvent first = queue.poll(IDLE_POLL.toMillis(), TimeUnit.MILLISECONDS);
+                Scoped first = queue.poll(IDLE_POLL.toMillis(), TimeUnit.MILLISECONDS);
                 if (first == null) {
                     continue;
                 }
@@ -388,19 +426,22 @@ public final class PostgresAuditTrail implements EventSink, AutoCloseable {
                 boolean previousAutoCommit = connection.getAutoCommit();
                 connection.setAutoCommit(false);
                 try (PreparedStatement statement = connection.prepareStatement(INSERT_EVENT)) {
-                    for (PoolEvent event : batch) {
-                        AuditEventMapper.AuditRow row = AuditEventMapper.toRow(event);
-                        statement.setString(1, row.eventType());
-                        statement.setString(2, row.resourceKind());
-                        statement.setString(3, row.resourceValue());
-                        statement.setString(4, row.context());
-                        statement.setLong(5, row.occurredAtNanos());
+                    for (Scoped scoped : batch) {
+                        // poolId is threaded outside the mapper: the mapper stays pool-agnostic,
+                        // translating only the domain event; the tenant rides on the Scoped carrier.
+                        AuditEventMapper.AuditRow row = AuditEventMapper.toRow(scoped.event());
+                        statement.setString(1, scoped.poolId());
+                        statement.setString(2, row.eventType());
+                        statement.setString(3, row.resourceKind());
+                        statement.setString(4, row.resourceValue());
+                        statement.setString(5, row.context());
+                        statement.setLong(6, row.occurredAtNanos());
                         if (row.untilNanos() == null) {
-                            statement.setNull(6, Types.BIGINT);
+                            statement.setNull(7, Types.BIGINT);
                         } else {
-                            statement.setLong(6, row.untilNanos());
+                            statement.setLong(7, row.untilNanos());
                         }
-                        statement.setString(7, row.cause());
+                        statement.setString(8, row.cause());
                         statement.addBatch();
                     }
                     statement.executeBatch();

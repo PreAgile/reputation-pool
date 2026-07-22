@@ -21,6 +21,7 @@ import io.github.preagile.reputationpool.grpc.v1.AdvisorProto;
 import io.grpc.Status;
 import io.grpc.stub.ServerCallStreamObserver;
 import java.util.List;
+import java.util.Objects;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -64,9 +65,24 @@ public final class EventBroadcaster implements EventSink {
         this.queueCapacity = queueCapacity;
     }
 
-    /** Registers a stream; the observer stays open until the client cancels or the server closes. */
+    /**
+     * Registers a stream under the default pool; the observer stays open until the client cancels or
+     * the server closes. The reference server is a single pool, so it subscribes here and receives the
+     * {@code 'default'} pool's events.
+     */
     synchronized void subscribe(ServerCallStreamObserver<AdvisorProto.PoolEvent> observer) {
-        Subscriber subscriber = new Subscriber(observer, queueCapacity);
+        subscribe("default", observer);
+    }
+
+    /**
+     * Registers a stream scoped to {@code poolId}: it will receive only events emitted for that pool
+     * (see {@link #forPool(String)} and {@link #emit(PoolEvent)}). Which pool a subscription belongs to
+     * is a server-side decision — the host knows the caller's tenant — and is deliberately never on the
+     * wire, so the proto contract is untouched.
+     */
+    synchronized void subscribe(String poolId, ServerCallStreamObserver<AdvisorProto.PoolEvent> observer) {
+        Objects.requireNonNull(poolId, "poolId must not be null");
+        Subscriber subscriber = new Subscriber(poolId, observer, queueCapacity);
         if (closed) {
             // Subscribed during/after shutdown: complete immediately so the stream ends cleanly
             // instead of being left open and reset. Mutual exclusion with close() closes the race.
@@ -78,14 +94,42 @@ public final class EventBroadcaster implements EventSink {
         subscribers.add(subscriber);
     }
 
+    /**
+     * A view of this broadcaster bound to one pool: the returned {@link EventSink} fans everything it
+     * receives out to only that pool's subscribers, sharing this broadcaster's subscriber registry.
+     * The poolId travels as wiring (who emitted), mirroring cloud's {@code TenantMeteringSink}, never
+     * as a field on the pool-agnostic {@link PoolEvent}.
+     *
+     * @param poolId the pool every event emitted through the returned sink is fanned out to; never null
+     * @return an {@link EventSink} that broadcasts to {@code poolId}'s subscribers
+     */
+    public EventSink forPool(String poolId) {
+        Objects.requireNonNull(poolId, "poolId must not be null");
+        return event -> emit(poolId, event);
+    }
+
+    /** Fans the event out to the default pool's subscribers — the pool-unaware {@link EventSink}. */
     @Override
     public void emit(PoolEvent event) {
+        emit("default", event);
+    }
+
+    /**
+     * Fans one event out to exactly the subscribers of {@code poolId} — the isolation invariant: an
+     * event emitted for pool A never reaches a pool-B subscriber. The proto mapping happens once and is
+     * shared across the matching subscribers; the per-subscriber offer/drain/overflow contract is
+     * unchanged.
+     */
+    private void emit(String poolId, PoolEvent event) {
         if (subscribers.isEmpty()) {
             return;
         }
         // Mapped once and shared: protobuf messages are immutable.
         AdvisorProto.PoolEvent proto = ProtoMapping.toProto(event);
         for (Subscriber subscriber : subscribers) {
+            if (!subscriber.poolId.equals(poolId)) {
+                continue;
+            }
             if (subscriber.queue.offer(proto)) {
                 subscriber.drain();
             } else {
@@ -115,6 +159,7 @@ public final class EventBroadcaster implements EventSink {
 
     private static final class Subscriber {
 
+        private final String poolId;
         private final ServerCallStreamObserver<AdvisorProto.PoolEvent> observer;
         private final BlockingQueue<AdvisorProto.PoolEvent> queue;
         private final AtomicBoolean wip = new AtomicBoolean();
@@ -124,7 +169,8 @@ public final class EventBroadcaster implements EventSink {
         // Only read and written while holding wip, so no volatile needed.
         private boolean terminated;
 
-        private Subscriber(ServerCallStreamObserver<AdvisorProto.PoolEvent> observer, int capacity) {
+        private Subscriber(String poolId, ServerCallStreamObserver<AdvisorProto.PoolEvent> observer, int capacity) {
+            this.poolId = poolId;
             this.observer = observer;
             this.queue = new ArrayBlockingQueue<>(capacity);
         }

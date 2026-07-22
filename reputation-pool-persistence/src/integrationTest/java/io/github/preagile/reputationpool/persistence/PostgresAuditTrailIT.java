@@ -155,6 +155,38 @@ class PostgresAuditTrailIT {
         assertThat(((PoolEvent.ResourceBlocklisted) readTrail().get(0)).until()).isEqualTo(Instant.MAX);
     }
 
+    @Test
+    @DisplayName("forPool tags each row with its pool_id, while the bare emit backfills 'default' — one"
+            + " shared trail, per-tenant attribution")
+    void tagsRowsWithTheEmittingPool() {
+        try (PostgresAuditTrail trail = new PostgresAuditTrail(dataSource)) {
+            trail.emit(new PoolEvent.ResourceUnblocked(PROXY, AT)); // pool-unaware -> 'default'
+            trail.forPool("tenant-1").emit(new PoolEvent.ResourceUnblocked(PROXY, AT.plusSeconds(1)));
+            trail.forPool("tenant-2").emit(new PoolEvent.ResourceUnblocked(ACCOUNT, AT.plusSeconds(2)));
+            trail.forPool("tenant-1").emit(new PoolEvent.ResourceUnblocked(PROXY, AT.plusSeconds(3)));
+        }
+
+        // Same shared queue and writer; the pool_id column is the only thing that distinguishes the
+        // tenants' rows — the append-only order (seq) is preserved across pools.
+        assertThat(readPoolIds()).containsExactly("default", "tenant-1", "tenant-2", "tenant-1");
+    }
+
+    /** Every row's {@code pool_id} in {@code seq} order — the tenant attribution the column adds. */
+    private List<String> readPoolIds() {
+        String sql = "SELECT pool_id FROM audit_event ORDER BY seq";
+        List<String> poolIds = new ArrayList<>();
+        try (Connection connection = dataSource.getConnection();
+                Statement statement = connection.createStatement();
+                ResultSet resultSet = statement.executeQuery(sql)) {
+            while (resultSet.next()) {
+                poolIds.add(resultSet.getString(1));
+            }
+        } catch (SQLException e) {
+            throw new PersistenceException("failed to read audit pool ids", e);
+        }
+        return poolIds;
+    }
+
     /** The whole ledger in {@code seq} order, rebuilt into domain events via the mapper. */
     private List<PoolEvent> readTrail() {
         String sql =

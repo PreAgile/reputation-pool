@@ -73,6 +73,19 @@ class PostgresAuditTrailTest {
         return new PoolEvent.ResourceUnblocked(RID, AT.plusSeconds(i));
     }
 
+    /**
+     * A {@link PostgresAuditTrail.BatchWriter} that unwraps each queued {@link PostgresAuditTrail.Scoped}
+     * and records only its event — the pool-agnostic view the pre-pool contract tests assert on, so
+     * the poolId threading is invisible to tests that do not care about it.
+     */
+    private static PostgresAuditTrail.BatchWriter recording(List<PoolEvent> sink) {
+        return batch -> record(sink, batch);
+    }
+
+    private static void record(List<PoolEvent> sink, List<PostgresAuditTrail.Scoped> batch) {
+        batch.forEach(scoped -> sink.add(scoped.event()));
+    }
+
     @Test
     @DisplayName("the trail is the pool's observation terminus: plugged in as its EventSink, it records"
             + " the lease-fail-cool story a pool lives through, in the order it happened")
@@ -83,7 +96,7 @@ class PostgresAuditTrailTest {
         // The production wiring, minus JDBC: the trail IS the pool's one EventSink, receiving every
         // state transition on the pool thread that caused it. (In production the DataSource
         // constructor supplies the BatchWriter; the recording seam here stands in for the database.)
-        try (PostgresAuditTrail trail = new PostgresAuditTrail(written::addAll, 64)) {
+        try (PostgresAuditTrail trail = new PostgresAuditTrail(recording(written), 64)) {
             ResourcePool pool = new ResourcePool(
                     new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 2, 2),
                     new WeightedRandomSelectionStrategy(),
@@ -116,6 +129,35 @@ class PostgresAuditTrailTest {
     }
 
     @Test
+    @DisplayName("the pool an event is attributed to comes from who emitted it: forPool(id) tags every"
+            + " event with that id, while the bare emit tags them 'default'")
+    void tagsEachEventWithTheEmittingPool() {
+        List<PostgresAuditTrail.Scoped> queued = Collections.synchronizedList(new ArrayList<>());
+        try (PostgresAuditTrail trail = new PostgresAuditTrail(queued::addAll, 64)) {
+            trail.emit(event(0)); // pool-unaware caller -> 'default'
+            trail.forPool("t1").emit(event(1));
+            trail.forPool("t2").emit(event(2));
+            trail.forPool("t1").emit(event(3)); // same pool view reused
+        }
+
+        // Same events, same one queue and writer — only the accompanying poolId differs, which is the
+        // whole design: the tenant rides as wiring, never as a field on the pool-agnostic event.
+        assertThat(queued).extracting(PostgresAuditTrail.Scoped::poolId).containsExactly("default", "t1", "t2", "t1");
+        assertThat(queued)
+                .extracting(PostgresAuditTrail.Scoped::event)
+                .containsExactly(event(0), event(1), event(2), event(3));
+    }
+
+    @Test
+    @DisplayName("forPool rejects a null poolId, and the returned sink rejects a null event")
+    void forPoolRejectsNulls() {
+        try (PostgresAuditTrail trail = new PostgresAuditTrail(noopWriter(), 4)) {
+            assertThatThrownBy(() -> trail.forPool(null)).isInstanceOf(NullPointerException.class);
+            assertThatThrownBy(() -> trail.forPool("t1").emit(null)).isInstanceOf(NullPointerException.class);
+        }
+    }
+
+    @Test
     @DisplayName("many pool threads emitting at once lose nothing silently: written + dropped == emitted,"
             + " no duplicates, and each thread's events keep their order")
     void concurrentEmittersLoseNothingSilently() throws InterruptedException {
@@ -123,7 +165,7 @@ class PostgresAuditTrailTest {
         int perEmitter = 200;
         List<PoolEvent> written = Collections.synchronizedList(new ArrayList<>());
         // A small queue against a live (unstalled) writer, so real contention decides what overflows.
-        PostgresAuditTrail trail = new PostgresAuditTrail(written::addAll, 64);
+        PostgresAuditTrail trail = new PostgresAuditTrail(recording(written), 64);
 
         CountDownLatch start = new CountDownLatch(1);
         List<Thread> threads = new ArrayList<>();
@@ -165,7 +207,7 @@ class PostgresAuditTrailTest {
         int emitters = 8;
         int perEmitter = 200;
         List<PoolEvent> written = Collections.synchronizedList(new ArrayList<>());
-        PostgresAuditTrail trail = new PostgresAuditTrail(written::addAll, 64);
+        PostgresAuditTrail trail = new PostgresAuditTrail(recording(written), 64);
 
         CountDownLatch start = new CountDownLatch(1);
         // Counted down once by every emitter at its halfway mark, so the close() below is guaranteed
@@ -211,7 +253,7 @@ class PostgresAuditTrailTest {
                 batch -> {
                     writerEntered.countDown();
                     await(writerReleased);
-                    written.addAll(batch);
+                    record(written, batch);
                 },
                 4);
         try {
@@ -241,7 +283,7 @@ class PostgresAuditTrailTest {
                 batch -> {
                     writerEntered.countDown();
                     await(writerReleased);
-                    written.addAll(batch);
+                    record(written, batch);
                 },
                 4);
 
@@ -272,7 +314,7 @@ class PostgresAuditTrailTest {
     @DisplayName("the writer preserves emission order")
     void writerPreservesEmissionOrder() {
         List<PoolEvent> written = Collections.synchronizedList(new ArrayList<>());
-        PostgresAuditTrail trail = new PostgresAuditTrail(written::addAll, 1024);
+        PostgresAuditTrail trail = new PostgresAuditTrail(recording(written), 1024);
 
         List<PoolEvent> emitted =
                 IntStream.range(0, 300).mapToObj(PostgresAuditTrailTest::event).toList();
@@ -294,7 +336,7 @@ class PostgresAuditTrailTest {
                         if (failNext.getAndSet(false)) {
                             throw new PersistenceException("database unavailable", null);
                         }
-                        written.addAll(batch);
+                        record(written, batch);
                     } finally {
                         firstAttempt.countDown();
                     }
@@ -314,7 +356,7 @@ class PostgresAuditTrailTest {
     @DisplayName("close() flushes every accepted event, then rejects (and counts) late arrivals")
     void closeFlushesThenRejects() {
         List<PoolEvent> written = Collections.synchronizedList(new ArrayList<>());
-        PostgresAuditTrail trail = new PostgresAuditTrail(written::addAll, 16);
+        PostgresAuditTrail trail = new PostgresAuditTrail(recording(written), 16);
 
         trail.emit(event(0));
         trail.emit(event(1));
@@ -340,7 +382,7 @@ class PostgresAuditTrailTest {
                 batch -> {
                     writerEntered.countDown();
                     awaitUninterruptibly(databaseAnswers);
-                    written.addAll(batch);
+                    record(written, batch);
                 },
                 16,
                 Duration.ofMillis(200));
