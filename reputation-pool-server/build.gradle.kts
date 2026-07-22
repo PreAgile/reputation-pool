@@ -45,8 +45,8 @@ dependencies {
     // Versions match the persistence module so the driver/Flyway resolve to one artifact each.
     implementation(project(":reputation-pool-persistence"))
     implementation("org.postgresql:postgresql:42.7.13")
-    implementation("org.flywaydb:flyway-core:12.11.0")
-    runtimeOnly("org.flywaydb:flyway-database-postgresql:12.11.0")
+    implementation("org.flywaydb:flyway-core:13.0.0")
+    runtimeOnly("org.flywaydb:flyway-database-postgresql:13.0.0")
 
     // A concrete transport is only needed to actually run/serve; the grpc module brings the stub API.
     runtimeOnly("io.grpc:grpc-netty-shaded:$grpcVersion")

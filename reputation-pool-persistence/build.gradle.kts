@@ -53,8 +53,8 @@ dependencies {
     // Plain JDBC only — no Spring, JPA, or Hibernate. The PostgreSQL driver and Flyway (schema
     // migrations) are the module's only runtime dependencies.
     implementation("org.postgresql:postgresql:42.7.13")
-    implementation("org.flywaydb:flyway-core:12.11.0")
-    runtimeOnly("org.flywaydb:flyway-database-postgresql:12.11.0")
+    implementation("org.flywaydb:flyway-core:13.0.0")
+    runtimeOnly("org.flywaydb:flyway-database-postgresql:13.0.0")
 
     testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
