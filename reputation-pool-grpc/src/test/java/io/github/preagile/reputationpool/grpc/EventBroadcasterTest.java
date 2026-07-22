@@ -105,6 +105,37 @@ class EventBroadcasterTest {
     }
 
     @Test
+    void anEventEmittedForOnePoolReachesOnlyThatPoolsSubscribers() {
+        EventBroadcaster broadcaster = new EventBroadcaster();
+        FakeStreamObserver poolA = new FakeStreamObserver(true);
+        FakeStreamObserver poolB = new FakeStreamObserver(true);
+        broadcaster.subscribe("a", poolA);
+        broadcaster.subscribe("b", poolB);
+
+        broadcaster.forPool("a").emit(unblocked("only-a"));
+
+        // The isolation invariant: pool A's subscriber sees it, pool B's never does.
+        assertThat(poolA.received).hasSize(1);
+        assertThat(valueOf(poolA.received.get(0))).isEqualTo("only-a");
+        assertThat(poolB.received).isEmpty();
+    }
+
+    @Test
+    void theBareEmitReachesDefaultPoolSubscribersOnly() {
+        EventBroadcaster broadcaster = new EventBroadcaster();
+        FakeStreamObserver defaultPool = new FakeStreamObserver(true); // subscribe(observer) -> 'default'
+        FakeStreamObserver otherPool = new FakeStreamObserver(true);
+        broadcaster.subscribe(defaultPool);
+        broadcaster.subscribe("other", otherPool);
+
+        broadcaster.emit(unblocked("to-default"));
+
+        assertThat(defaultPool.received).hasSize(1);
+        assertThat(valueOf(defaultPool.received.get(0))).isEqualTo("to-default");
+        assertThat(otherPool.received).isEmpty();
+    }
+
+    @Test
     void aNotReadySubscriberBuffersUntilOnReadyResumesTheDrain() {
         EventBroadcaster broadcaster = new EventBroadcaster();
         FakeStreamObserver subscriber = new FakeStreamObserver(false);
