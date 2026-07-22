@@ -88,6 +88,19 @@ public class ReputationAdvisorService extends ReputationAdvisorGrpc.ReputationAd
         return this.pool;
     }
 
+    /**
+     * The pool a {@code SubscribeEvents} stream is scoped to — the streaming counterpart of {@link
+     * #pool()}. The default {@code "default"} keeps the reference server's single-pool behaviour; a
+     * multi-tenant host overrides it (for example, from a tenant carried on the gRPC context) so a
+     * subscriber receives only its own pool's events and never another tenant's, without
+     * re-implementing {@link #subscribeEvents}.
+     *
+     * @return the pool id whose events this subscription receives; never null
+     */
+    protected String subscriptionPoolId() {
+        return "default";
+    }
+
     @Override
     public void register(RegisterRequest request, StreamObserver<RegisterResponse> observer) {
         unary(observer, () -> {
@@ -138,8 +151,9 @@ public class ReputationAdvisorService extends ReputationAdvisorGrpc.ReputationAd
     @Override
     public void subscribeEvents(SubscribeEventsRequest request, StreamObserver<PoolEvent> observer) {
         // Registration only — the stream stays open (no onCompleted) until the client cancels or
-        // the server closes; delivery is the broadcaster's job.
-        broadcaster.subscribe((ServerCallStreamObserver<PoolEvent>) observer);
+        // the server closes; delivery is the broadcaster's job. The subscription is scoped to
+        // subscriptionPoolId() (default "default"), so a multi-tenant host isolates streams per tenant.
+        broadcaster.subscribe(subscriptionPoolId(), (ServerCallStreamObserver<PoolEvent>) observer);
     }
 
     /**
