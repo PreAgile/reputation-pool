@@ -19,7 +19,10 @@ import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.cfg.CoercionAction;
+import com.fasterxml.jackson.databind.cfg.CoercionInputShape;
 import com.fasterxml.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.databind.type.LogicalType;
 
 /**
  * The only place in this module that knows JSON exists. Everything else moves DTO records and
@@ -34,6 +37,10 @@ import com.fasterxml.jackson.databind.json.JsonMapper;
  *       {@code "latencly"} is wrong and a client believing it reported a latency it never sent.
  *   <li><b>Trailing content is rejected.</b> {@code {"context":"naver"} {"context":"other"}} is one
  *       malformed request, not the first object with the rest ignored.
+ *   <li><b>A scalar of the wrong JSON type is rejected.</b> Jackson would otherwise coerce
+ *       {@code {"context": 123}} into the string {@code "123"} — a body the contract says is invalid,
+ *       accepted with its meaning quietly changed. The contract declares {@code type: string}, so a
+ *       number, a float, or a boolean in that position is a {@code 400}.
  *   <li><b>Nulls are omitted on the way out.</b> The event DTO is a flat union whose inapplicable fields
  *       are null; writing them out as explicit {@code null}s would triple the size of every SSE frame and
  *       invite clients to distinguish "absent" from "null" when there is no such distinction here.
@@ -51,6 +58,14 @@ final class Json {
             // never what a caller wants.
             .defaultPropertyInclusion(
                     JsonInclude.Value.construct(JsonInclude.Include.NON_NULL, JsonInclude.Include.ALWAYS))
+            // Every field of every DTO is textual, and the contract says so. Jackson's default is to
+            // coerce a number or a boolean into a string, which turns an invalid body into an accepted one
+            // with a different meaning — the exact failure this boundary exists to prevent. An
+            // object or an array in a string position already fails; these three shapes did not.
+            .withCoercionConfig(
+                    LogicalType.Textual, config -> config.setCoercion(CoercionInputShape.Integer, CoercionAction.Fail)
+                            .setCoercion(CoercionInputShape.Float, CoercionAction.Fail)
+                            .setCoercion(CoercionInputShape.Boolean, CoercionAction.Fail))
             .build();
 
     private Json() {}

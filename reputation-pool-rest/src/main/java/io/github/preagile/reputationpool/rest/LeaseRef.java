@@ -108,9 +108,15 @@ record LeaseRef(ResourceId resource, Context context, long token) {
      * {@link IllegalArgumentException}. That is what lets the handler map "unparseable lease id" to a
      * {@code 404} without a second kind of failure leaking through as a {@code 500}.
      *
+     * <p>Only the <em>canonical</em> spelling is accepted: {@code encode(decode(id))} equals {@code id},
+     * or the id is refused. The JDK's URL decoder is more permissive than our encoder — it also accepts
+     * padding and non-zero trailing bits — which would let several different id strings name one lease.
+     * One lease, one id keeps the identity in the string as strong as the identity in the fields, so a
+     * caller (or a future cache, idempotency key, or audit record) can compare ids directly.
+     *
      * @param leaseId the opaque id from a previous {@code acquire}
      * @return the decoded reference
-     * @throws IllegalArgumentException if {@code leaseId} is not a well-formed lease id
+     * @throws IllegalArgumentException if {@code leaseId} is not a well-formed, canonical lease id
      * @throws NullPointerException if {@code leaseId} is null
      */
     static LeaseRef decode(String leaseId) {
@@ -136,7 +142,11 @@ record LeaseRef(ResourceId resource, Context context, long token) {
                 throw new IllegalArgumentException("malformed lease id: trailing bytes");
             }
             // The domain constructors are the last gate: a blank value or context is rejected here.
-            return new LeaseRef(new ResourceId(kind, value), new Context(context), token);
+            LeaseRef ref = new LeaseRef(new ResourceId(kind, value), new Context(context), token);
+            if (!ref.encode().equals(leaseId)) {
+                throw new IllegalArgumentException("malformed lease id: not a canonical encoding");
+            }
+            return ref;
         } catch (IOException e) {
             // A truncated id: the stream ran out mid-field. ByteArrayInputStream has no other failure.
             throw new IllegalArgumentException("malformed lease id: truncated", e);

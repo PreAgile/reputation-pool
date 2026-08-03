@@ -378,6 +378,10 @@ components:
         value:
           type: string
           minLength: 1
+          # minLength alone would admit "   ", which the engine rejects (ResourceId uses isBlank).
+          # A schema that accepts what the server 400s is a contract that lies to generated clients,
+          # so the non-blank invariant is machine-readable here: at least one non-whitespace character.
+          pattern: '\S'
           description: The identifier, opaque to the engine. Must not be blank.
           examples: ['10.0.0.7:8080']
       additionalProperties: false
@@ -385,6 +389,8 @@ components:
     Context:
       type: string
       minLength: 1
+      # Same reason as ResourceId.value: the domain rejects blank, so the schema must too.
+      pattern: '\S'
       description: |
         The axis reputation is tracked along — typically a target platform. Reputation is per
         (resource, context), so failures on one context never cool a resource on another. `*` is

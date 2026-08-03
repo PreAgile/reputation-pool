@@ -220,26 +220,99 @@ final class RestMapping {
         require(dto.type() != null, "event.type is required");
         Instant at = instantOf(dto.at(), "event.at");
         return switch (dto.type()) {
-            case TYPE_RESOURCE_COOLED ->
-                new PoolEvent.ResourceCooled(
+            case TYPE_RESOURCE_COOLED -> {
+                onlyUses(dto, Field.RESOURCE, Field.CONTEXT, Field.UNTIL, Field.CAUSE);
+                yield new PoolEvent.ResourceCooled(
                         toDomain(dto.resource()),
                         contextOf(dto.context()),
                         at,
                         instantOf(dto.until(), "event.until"),
                         cause(dto));
-            case TYPE_RESOURCE_RECOVERED ->
-                new PoolEvent.ResourceRecovered(toDomain(dto.resource()), contextOf(dto.context()), at);
-            case TYPE_RESOURCE_BLOCKLISTED ->
-                new PoolEvent.ResourceBlocklisted(toDomain(dto.resource()), at, until(dto));
-            case TYPE_RESOURCE_UNBLOCKED -> new PoolEvent.ResourceUnblocked(toDomain(dto.resource()), at);
-            case TYPE_RESOURCE_LEASED ->
-                new PoolEvent.ResourceLeased(
+            }
+            case TYPE_RESOURCE_RECOVERED -> {
+                onlyUses(dto, Field.RESOURCE, Field.CONTEXT);
+                yield new PoolEvent.ResourceRecovered(toDomain(dto.resource()), contextOf(dto.context()), at);
+            }
+            case TYPE_RESOURCE_BLOCKLISTED -> {
+                // Both until and permanent are applicable here; which of the two is required is
+                // decided by until(dto), and having both at once is rejected there.
+                onlyUses(dto, Field.RESOURCE, Field.UNTIL, Field.PERMANENT);
+                yield new PoolEvent.ResourceBlocklisted(toDomain(dto.resource()), at, until(dto));
+            }
+            case TYPE_RESOURCE_UNBLOCKED -> {
+                onlyUses(dto, Field.RESOURCE);
+                yield new PoolEvent.ResourceUnblocked(toDomain(dto.resource()), at);
+            }
+            case TYPE_RESOURCE_LEASED -> {
+                onlyUses(dto, Field.RESOURCE, Field.CONTEXT, Field.UNTIL);
+                yield new PoolEvent.ResourceLeased(
                         toDomain(dto.resource()), contextOf(dto.context()), at, instantOf(dto.until(), "event.until"));
-            case TYPE_LEASE_RELEASED ->
-                new PoolEvent.LeaseReleased(toDomain(dto.resource()), contextOf(dto.context()), at);
-            case TYPE_ACQUISITION_REJECTED -> new PoolEvent.AcquisitionRejected(contextOf(dto.context()), at);
+            }
+            case TYPE_LEASE_RELEASED -> {
+                onlyUses(dto, Field.RESOURCE, Field.CONTEXT);
+                yield new PoolEvent.LeaseReleased(toDomain(dto.resource()), contextOf(dto.context()), at);
+            }
+            case TYPE_ACQUISITION_REJECTED -> {
+                onlyUses(dto, Field.CONTEXT);
+                yield new PoolEvent.AcquisitionRejected(contextOf(dto.context()), at);
+            }
             default -> throw new IllegalArgumentException("unknown event type: " + dto.type());
         };
+    }
+
+    /**
+     * The optional components of the flat event DTO. Each event type uses a few of them; naming which ones
+     * is what lets {@link #onlyUses} reject the rest.
+     */
+    private enum Field {
+        RESOURCE("event.resource"),
+        CONTEXT("event.context"),
+        UNTIL("event.until"),
+        PERMANENT("event.permanent"),
+        CAUSE("event.cause");
+
+        private final String path;
+
+        Field(String path) {
+            this.path = path;
+        }
+
+        private Object of(PoolEventDto dto) {
+            return switch (this) {
+                case RESOURCE -> dto.resource();
+                case CONTEXT -> dto.context();
+                case UNTIL -> dto.until();
+                case PERMANENT -> dto.permanent();
+                case CAUSE -> dto.cause();
+            };
+        }
+    }
+
+    /**
+     * Rejects any optional field this event type does not use — the same "one payload, one meaning" rule
+     * {@link #toDomain(OutcomeDto)} applies to a success carrying a failure type.
+     *
+     * <p>Without it, decoding silently truncates: a {@code RESOURCE_UNBLOCKED} carrying a {@code context},
+     * an {@code until}, and a {@code cause} would be accepted and three of its fields dropped, so a client
+     * that sent the wrong event type would be told it succeeded. The round-trip property cannot catch this
+     * — {@code toDto} never produces those combinations — which is precisely why the check has to be
+     * explicit rather than assumed.
+     */
+    private static void onlyUses(PoolEventDto dto, Field... used) {
+        for (Field field : Field.values()) {
+            if (!contains(used, field)) {
+                require(field.of(dto) == null, field.path + " must be absent for " + dto.type());
+            }
+        }
+    }
+
+    private static boolean contains(Field[] used, Field field) {
+        for (Field candidate : used) {
+            if (candidate == field) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /**

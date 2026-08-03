@@ -63,23 +63,27 @@ tasks.test {
     }
 }
 
-// PIT targets the pure boundary translation — the mapper and the lease-reference codec. Both are total
-// functions over generated input, so every mutant is killable without a transport; the HTTP wiring that
-// arrives in later issues stays excluded for the same reason the grpc module excludes its service.
+// PIT targets the pure boundary translation — the mapper, the lease-reference codec, and the JSON codec.
+// All three are total, deterministic functions over generated input, so every mutant is killable without a
+// transport; in particular the strict-mapper configuration (unknown-field, trailing-token, and scalar-coercion
+// rejection) is exactly the kind of setting that can silently loosen, so it is mutated too. The HTTP wiring
+// that arrives in later issues stays excluded, for the same reason the grpc module excludes its service.
 pitest {
     pitestVersion = "1.25.5"
     junit5PluginVersion = "1.2.3"
     targetClasses =
         setOf(
             "io.github.preagile.reputationpool.rest.RestMapping",
-            "io.github.preagile.reputationpool.rest.LeaseRef")
+            "io.github.preagile.reputationpool.rest.LeaseRef",
+            "io.github.preagile.reputationpool.rest.Json")
     targetTests =
         setOf(
             "io.github.preagile.reputationpool.rest.RestMapping*Test",
-            "io.github.preagile.reputationpool.rest.LeaseRef*Test")
+            "io.github.preagile.reputationpool.rest.LeaseRef*Test",
+            "io.github.preagile.reputationpool.rest.JsonTest")
     threads = 4
     timestampedReports = false
-    // Measured baseline: 0 surviving mutants (75/75 killed). Tighten only.
+    // Measured baseline: 0 surviving mutants (94/94 killed). Tighten only.
     maxSurviving = 0
 }
 

@@ -107,6 +107,24 @@ class LeaseRefTest {
                 .hasMessageContaining("trailing bytes");
     }
 
+    /**
+     * The JDK's URL decoder accepts padding our encoder never writes, so {@code "…Q"} and {@code "…Q="}
+     * would otherwise both name one lease. One lease, one id: the non-canonical spelling is refused so the
+     * identity in the string is as strong as the identity in the fields.
+     */
+    @Test
+    void aPaddedIdIsRefusedEvenThoughItDecodesToTheSameFields() {
+        String canonical = new LeaseRef(PROXY, NAVER, 1L).encode();
+        byte[] bytes = Base64.getUrlDecoder().decode(canonical);
+        String padded = Base64.getUrlEncoder().encodeToString(bytes); // with padding
+
+        // only meaningful when the payload length actually produces padding
+        assertThat(padded).isNotEqualTo(canonical).endsWith("=");
+        assertThatThrownBy(() -> LeaseRef.decode(padded))
+                .isInstanceOf(IllegalArgumentException.class)
+                .hasMessageContaining("not a canonical encoding");
+    }
+
     @Test
     void anIdNamingAResourceKindThatDoesNotExistIsRefused() {
         String encoded = encodeWithVersion((byte) 1, "TELEPORTER", "somewhere", "naver", 1L);

@@ -62,8 +62,46 @@ class JsonTest {
     }
 
     @Test
-    void aWrongJsonTypeForAFieldIsRejected() {
+    void anObjectWhereAStringIsExpectedIsRejected() {
         assertThatThrownBy(() -> Json.read("{\"context\":{\"value\":\"naver\"}}", AcquireLeaseRequest.class))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /**
+     * Jackson's default is to coerce these into strings, so {@code {"context": 123}} would arrive as the
+     * context {@code "123"} — a body the contract calls invalid, accepted with its meaning changed. Each
+     * scalar shape is checked separately: they are configured individually, so one could be re-enabled
+     * without the others noticing.
+     */
+    @Test
+    void anIntegerWhereAStringIsExpectedIsRejected() {
+        assertThatThrownBy(() -> Json.read("{\"context\":123}", AcquireLeaseRequest.class))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aFloatWhereAStringIsExpectedIsRejected() {
+        assertThatThrownBy(() -> Json.read("{\"context\":1.5}", AcquireLeaseRequest.class))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void aBooleanWhereAStringIsExpectedIsRejected() {
+        assertThatThrownBy(() -> Json.read("{\"context\":true}", AcquireLeaseRequest.class))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** The same coercion rule applies to a nested DTO's fields, not only to the top-level body. */
+    @Test
+    void aCoercedScalarIsRejectedInsideANestedObjectToo() {
+        assertThatThrownBy(() -> Json.read("{\"kind\":7,\"value\":\"10.0.0.7:8080\"}", ResourceIdDto.class))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    /** An array in a string position was already refused; asserted so the pair of shapes is complete. */
+    @Test
+    void anArrayWhereAStringIsExpectedIsRejected() {
+        assertThatThrownBy(() -> Json.read("{\"context\":[\"naver\"]}", AcquireLeaseRequest.class))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

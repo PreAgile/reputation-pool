@@ -184,10 +184,17 @@ class RestMappingTest {
                     .hasMessageContaining("unknown resource kind: proxy");
         }
 
+        /**
+         * The message is pinned to the domain's own wording, not just to the exception type: a blank value
+         * crosses two possible throw sites — the guard in {@code RestMapping} and the {@code ResourceId}
+         * constructor — and only the message says which one fired. Without it the test would keep passing if
+         * the rejection moved layer, and the name would then state something false.
+         */
         @Test
         void aBlankResourceValueIsRejectedByTheDomain() {
             assertThatThrownBy(() -> RestMapping.toDomain(new ResourceIdDto("PROXY", "  ")))
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("value must not be null or blank");
         }
 
         @Test
@@ -277,10 +284,12 @@ class RestMappingTest {
                     .hasMessageContaining("not an ISO-8601 duration");
         }
 
+        /** Same reasoning as the blank-value case: the message is what proves {@code Outcome} rejected it. */
         @Test
         void aNegativeLatencyIsRejectedByTheDomain() {
             assertThatThrownBy(() -> RestMapping.toDomain(new OutcomeDto("SUCCESS", "PT-1S", null)))
-                    .isInstanceOf(IllegalArgumentException.class);
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessage("latency must not be negative");
         }
 
         @Test
@@ -372,6 +381,121 @@ class RestMappingTest {
             assertThatThrownBy(() -> RestMapping.toDomain(dto))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("must be absent on a permanent block");
+        }
+
+        /**
+         * The flat event DTO carries the union of every variant's fields, so a body can name fields its own
+         * type does not use. Decoding refuses them instead of dropping them — the same "one payload, one
+         * meaning" rule a {@code SUCCESS} carrying a {@code failureType} gets. Silent truncation would tell a
+         * client that sent the wrong event type that it succeeded.
+         *
+         * <p>The round-trip property cannot reach these: {@code toDto} never produces such a combination, so
+         * each one needs its own case. All five optional fields appear below across the variants.
+         */
+        @Test
+        void anUnblockedEventCarryingFieldsItDoesNotUseIsRejected() {
+            assertThatThrownBy(() -> RestMapping.toDomain(unblockedWith("naver", null, null, null)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.context must be absent for RESOURCE_UNBLOCKED");
+            assertThatThrownBy(() -> RestMapping.toDomain(unblockedWith(null, AT.toString(), null, null)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.until must be absent for RESOURCE_UNBLOCKED");
+            assertThatThrownBy(() -> RestMapping.toDomain(unblockedWith(null, null, Boolean.FALSE, null)))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.permanent must be absent for RESOURCE_UNBLOCKED");
+            assertThatThrownBy(() -> RestMapping.toDomain(unblockedWith(null, null, null, "TIMEOUT")))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.cause must be absent for RESOURCE_UNBLOCKED");
+        }
+
+        @Test
+        void aRejectedAcquisitionCarryingAResourceIsRejected() {
+            PoolEventDto dto = new PoolEventDto(
+                    "ACQUISITION_REJECTED", AT.toString(), RestMapping.toDto(PROXY), "naver", null, null, null);
+
+            assertThatThrownBy(() -> RestMapping.toDomain(dto))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.resource must be absent for ACQUISITION_REJECTED");
+        }
+
+        @Test
+        void aRecoveredEventCarryingADeadlineIsRejected() {
+            PoolEventDto dto = new PoolEventDto(
+                    "RESOURCE_RECOVERED",
+                    AT.toString(),
+                    RestMapping.toDto(PROXY),
+                    "naver",
+                    AT.plusSeconds(60).toString(),
+                    null,
+                    null);
+
+            assertThatThrownBy(() -> RestMapping.toDomain(dto))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.until must be absent for RESOURCE_RECOVERED");
+        }
+
+        @Test
+        void aLeasedEventCarryingAFailureCauseIsRejected() {
+            PoolEventDto dto = new PoolEventDto(
+                    "RESOURCE_LEASED",
+                    AT.toString(),
+                    RestMapping.toDto(PROXY),
+                    "naver",
+                    AT.plusSeconds(30).toString(),
+                    null,
+                    "TIMEOUT");
+
+            assertThatThrownBy(() -> RestMapping.toDomain(dto))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.cause must be absent for RESOURCE_LEASED");
+        }
+
+        /** A blocklist is resource-wide, so a context on it means the sender had the wrong event in mind. */
+        @Test
+        void aBlocklistedEventCarryingAContextIsRejected() {
+            PoolEventDto dto = new PoolEventDto(
+                    "RESOURCE_BLOCKLISTED",
+                    AT.toString(),
+                    RestMapping.toDto(PROXY),
+                    "naver",
+                    AT.plusSeconds(60).toString(),
+                    null,
+                    null);
+
+            assertThatThrownBy(() -> RestMapping.toDomain(dto))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.context must be absent for RESOURCE_BLOCKLISTED");
+        }
+
+        @Test
+        void aReleasedEventCarryingAPermanentFlagIsRejected() {
+            PoolEventDto dto = new PoolEventDto(
+                    "LEASE_RELEASED", AT.toString(), RestMapping.toDto(PROXY), "naver", null, Boolean.TRUE, null);
+
+            assertThatThrownBy(() -> RestMapping.toDomain(dto))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.permanent must be absent for LEASE_RELEASED");
+        }
+
+        @Test
+        void aCooledEventCarryingAPermanentFlagIsRejected() {
+            PoolEventDto dto = new PoolEventDto(
+                    "RESOURCE_COOLED",
+                    AT.toString(),
+                    RestMapping.toDto(PROXY),
+                    "naver",
+                    AT.plusSeconds(60).toString(),
+                    Boolean.TRUE,
+                    "BLOCKED");
+
+            assertThatThrownBy(() -> RestMapping.toDomain(dto))
+                    .isInstanceOf(IllegalArgumentException.class)
+                    .hasMessageContaining("event.permanent must be absent for RESOURCE_COOLED");
+        }
+
+        private PoolEventDto unblockedWith(String context, String until, Boolean permanent, String cause) {
+            return new PoolEventDto(
+                    "RESOURCE_UNBLOCKED", AT.toString(), RestMapping.toDto(PROXY), context, until, permanent, cause);
         }
 
         @Test
