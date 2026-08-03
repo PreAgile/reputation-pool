@@ -8,5 +8,6 @@ rootProject.name = "reputation-pool"
 include("reputation-pool-core")
 include("reputation-pool-adapters")
 include("reputation-pool-grpc")
+include("reputation-pool-rest")
 include("reputation-pool-server")
 include("reputation-pool-persistence")
