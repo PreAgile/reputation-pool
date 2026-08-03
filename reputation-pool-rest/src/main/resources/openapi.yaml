@@ -1,0 +1,553 @@
+# Copyright 2026 the reputation-pool authors
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# The contract of the REST surface, hand-written and reviewed — the counterpart of advisor.proto.
+# It is not generated from the code: this is what consumers pin against, so it is authored
+# deliberately. The handler and the HTTP binding are implemented in later changes; the contract is
+# declared now to lock it, exactly as advisor.proto declared its service ahead of the implementation.
+
+openapi: 3.1.0
+
+info:
+  title: Reputation Pool REST advisor
+  version: 0.1.0
+  description: |
+    Lease a resource, report what happened to it, and watch the pool react.
+
+    The engine decides *which* resource a caller gets: reputation is tracked per
+    (resource, context) pair, so a proxy that keeps failing on one platform is cooled there
+    without being penalised everywhere else. A caller therefore asks for "something that works
+    for this context" and never names a resource.
+
+    ## Status codes carry the decision
+
+    The gRPC surface reports "nothing available" as a successful call with `granted: false`.
+    This surface reports it as `409`, because HTTP retry middleware, gateways, and circuit
+    breakers branch on the status code and never read the body. `409` rather than `503`:
+    finding nothing to lend is a normal outcome of a healthy pool, and a 5xx would count it as
+    a server error against the service's own error budget.
+
+    Every non-2xx response is `application/problem+json` (RFC 9457) in one shape.
+
+    ## Lease identity
+
+    `acquire` returns an opaque `leaseId` and a `Location` header. Renew and release address the
+    lease by that id. It encodes the resource, the context, and the fencing token that authorises
+    renew/release, and it is **opaque**: clients must never parse or construct one.
+
+    A lease id is not a secret and not a capability — the fencing token is a small counter, so ids
+    are guessable, and holding one is enough to release the lease it names. The pool has no notion
+    of caller identity; authentication and authorization belong to the host in front of it.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+
+servers:
+  - url: http://localhost:8080
+    description: The reference host's default HTTP port.
+
+tags:
+  - name: resources
+    description: Which resources the pool may lend.
+  - name: leases
+    description: Borrowing a resource and giving it back.
+  - name: outcomes
+    description: Feeding the engine what happened — this is what moves reputation.
+  - name: events
+    description: Watching the pool react, live.
+  - name: health
+    description: Liveness and readiness for orchestrators.
+
+paths:
+  /v1/resources:
+    post:
+      tags: [resources]
+      operationId: registerResource
+      summary: Make a resource eligible for acquire
+      description: |
+        Idempotent: registering an already-registered resource is a no-op, not a conflict. A newly
+        registered resource starts with a fresh reputation in every context.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RegisterResourceRequest'
+            examples:
+              proxy:
+                summary: A proxy endpoint
+                value:
+                  resource:
+                    kind: PROXY
+                    value: 10.0.0.7:8080
+      responses:
+        '204':
+          description: Registered (or already was).
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+
+  /v1/leases:
+    post:
+      tags: [leases]
+      operationId: acquireLease
+      summary: Lease one resource for a context
+      description: |
+        The pool picks a resource that is not blocklisted, not already leased, and in a selectable
+        state, weighted by its reputation in this context. The caller does not choose.
+
+        The lease is held until `expiresAt` unless renewed. Nothing enforces use of the resource —
+        the lease is advisory to everyone except the pool, which will not lend the same resource
+        twice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AcquireLeaseRequest'
+            examples:
+              forOnePlatform:
+                value:
+                  context: naver
+      responses:
+        '201':
+          description: A resource was leased.
+          headers:
+            Location:
+              description: The lease's own URL, for renew and release.
+              schema:
+                type: string
+                examples: ['/v1/leases/AQVQUk9YWQAPMTAuMC4wLjc6ODA4MAAFbmF2ZXIAAAAAAAAAAQ']
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Lease'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: |
+            Nothing eligible to lend for this context right now — every candidate is blocklisted,
+            already leased, or cooling. A normal outcome, not a failure: retry after the hint in
+            `Retry-After`, or widen the pool.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: integer
+                examples: [1]
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+              examples:
+                exhausted:
+                  value:
+                    type: https://github.com/PreAgile/reputation-pool/problems/no-resource-available
+                    title: No resource available
+                    status: 409
+                    detail: nothing eligible to lend for context 'naver'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+
+  /v1/leases/{leaseId}:
+    parameters:
+      - $ref: '#/components/parameters/LeaseId'
+    delete:
+      tags: [leases]
+      operationId: releaseLease
+      summary: Return a leased resource to the pool
+      description: |
+        Releasing is what makes a resource available again before its lease expires. A lease that
+        already lapsed (and was possibly re-lent to someone else) cannot be released by its former
+        holder: the fencing token inside the id no longer matches, and the answer is `404`.
+
+        Idempotent in the sense that matters — repeating the call changes nothing.
+      responses:
+        '204':
+          description: The lease was released.
+        '404':
+          description: |
+            No lease is held under this id: it already expired, was already released, or the
+            resource has since been re-lent to another caller under a newer token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/leases/{leaseId}/renewals:
+    parameters:
+      - $ref: '#/components/parameters/LeaseId'
+    post:
+      tags: [leases]
+      operationId: renewLease
+      summary: Extend a lease the caller still holds
+      description: |
+        Extends the hold by the pool's lease TTL, counted from now. Modelled as a sub-collection
+        (`POST .../renewals`) rather than a `PATCH` of the lease: the caller is not proposing a new
+        `expiresAt` — the server computes it — and each renewal is an event in its own right.
+      responses:
+        '200':
+          description: The lease was extended; `expiresAt` has moved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Lease'
+        '409':
+          description: |
+            The lease could not be extended: it already lapsed, another caller holds the resource
+            now, or the resource was blocklisted (a blocklisted resource is never kept alive — its
+            lease is allowed to lapse).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /v1/outcomes:
+    post:
+      tags: [outcomes]
+      operationId: reportOutcome
+      summary: Report what happened when a resource was used
+      description: |
+        The only input that moves reputation. Deliberately decoupled from leasing: a caller may
+        report on a resource whose lease has already lapsed (a slow request outliving its lease is
+        exactly when the engine most wants to hear about it).
+
+        Reporting is not idempotent — two reports of the same attempt count twice. Callers that
+        retry on network failure should be aware that the retried report may be recorded in
+        addition to the first.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReportOutcomeRequest'
+            examples:
+              success:
+                summary: It worked, in 120 ms
+                value:
+                  resource:
+                    kind: PROXY
+                    value: 10.0.0.7:8080
+                  context: naver
+                  outcome:
+                    result: SUCCESS
+                    latency: PT0.12S
+              blocked:
+                summary: The platform blocked us
+                value:
+                  resource:
+                    kind: PROXY
+                    value: 10.0.0.7:8080
+                  context: naver
+                  outcome:
+                    result: FAILURE
+                    failureType: BLOCKED
+                    latency: PT0.8S
+      responses:
+        '204':
+          description: Recorded.
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+
+  /v1/events:
+    get:
+      tags: [events]
+      operationId: subscribeEvents
+      summary: Watch pool events as they happen (SSE)
+      description: |
+        A Server-Sent Events stream of everything the pool decides: cooled, recovered, blocklisted,
+        unblocked, leased, released, and acquisitions that found nothing.
+
+        Each frame's `event:` name is the event's `type`, so a consumer can dispatch without parsing
+        the payload first. The stream stays open until the client disconnects or the server shuts
+        down; a comment heartbeat keeps idle connections alive through proxies that reap silent
+        sockets.
+
+        Events are observations, not a queue: a subscriber that cannot keep up has its stream cut
+        rather than being buffered without bound — the pool must never be slowed by an observer.
+        History from before the subscription is not replayed.
+      responses:
+        '200':
+          description: The stream. Each frame carries one event.
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/PoolEvent'
+              examples:
+                cooled:
+                  summary: One frame
+                  value: |
+                    event: RESOURCE_COOLED
+                    data: {"type":"RESOURCE_COOLED","at":"2026-08-03T10:15:30Z","resource":{"kind":"PROXY","value":"10.0.0.7:8080"},"context":"naver","until":"2026-08-03T10:20:30Z","cause":"BLOCKED"}
+
+  /healthz:
+    get:
+      tags: [health]
+      operationId: health
+      summary: Is the process alive
+      responses:
+        '200':
+          description: Alive.
+
+  /readyz:
+    get:
+      tags: [health]
+      operationId: ready
+      summary: Is the pool ready to serve
+      description: |
+        Distinct from liveness: on a persistent host the pool is restored from its store before it
+        accepts traffic, and this is what reports that restore having finished.
+      responses:
+        '200':
+          description: Ready.
+        '503':
+          description: Not ready yet.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+components:
+  parameters:
+    LeaseId:
+      name: leaseId
+      in: path
+      required: true
+      description: The opaque lease id from `acquire`. Never parse or construct one.
+      schema:
+        type: string
+        examples: ['AQVQUk9YWQAPMTAuMC4wLjc6ODA4MAAFbmF2ZXIAAAAAAAAAAQ']
+
+  responses:
+    BadRequest:
+      description: |
+        The request is malformed: invalid JSON, a missing or unknown field, an unknown enum value,
+        or a value the domain rejects (a blank resource value, a negative latency).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+          examples:
+            unknownKind:
+              value:
+                type: https://github.com/PreAgile/reputation-pool/problems/invalid-request
+                title: Invalid request
+                status: 400
+                detail: 'unknown resource kind: proxy'
+    UnsupportedMediaType:
+      description: The request body must be `application/json`.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/Problem'
+
+  schemas:
+    ResourceKind:
+      type: string
+      description: What sort of thing is being leased. Matched exactly — `proxy` is not `PROXY`.
+      enum: [PROXY, ACCOUNT, SESSION]
+
+    FailureType:
+      type: string
+      description: |
+        How an attempt failed. The engine treats these differently: a `BLOCKED` is strong evidence
+        against the (resource, context) pair, while a `TIMEOUT` may be transient.
+      enum: [CONNECTION_RESET, TLS_HANDSHAKE, TIMEOUT, BLOCKED, SLOW]
+
+    ResourceId:
+      type: object
+      description: A resource's identity — unique within its kind.
+      required: [kind, value]
+      properties:
+        kind:
+          $ref: '#/components/schemas/ResourceKind'
+        value:
+          type: string
+          minLength: 1
+          # minLength alone would admit "   ", which the engine rejects (ResourceId uses isBlank).
+          # A schema that accepts what the server 400s is a contract that lies to generated clients,
+          # so the non-blank invariant is machine-readable here: at least one non-whitespace character.
+          pattern: '\S'
+          description: The identifier, opaque to the engine. Must not be blank.
+          examples: ['10.0.0.7:8080']
+      additionalProperties: false
+
+    Context:
+      type: string
+      minLength: 1
+      # Same reason as ResourceId.value: the domain rejects blank, so the schema must too.
+      pattern: '\S'
+      description: |
+        The axis reputation is tracked along — typically a target platform. Reputation is per
+        (resource, context), so failures on one context never cool a resource on another. `*` is
+        the reserved global axis.
+      examples: [naver]
+
+    Outcome:
+      type: object
+      description: |
+        What happened on one use of a resource. Flat with a discriminator rather than a nested
+        wrapper, so a client reads `result` and the fields that case carries.
+      required: [result, latency]
+      properties:
+        result:
+          type: string
+          enum: [SUCCESS, FAILURE]
+        latency:
+          type: string
+          format: duration
+          description: |
+            How long the attempt took, as an ISO-8601 duration; never negative. Nanosecond
+            precision survives the wire — sub-millisecond latencies are not rounded away.
+          examples: [PT0.12S]
+        failureType:
+          $ref: '#/components/schemas/FailureType'
+      additionalProperties: false
+      allOf:
+        - description: |
+            `failureType` is required for a FAILURE and must be absent for a SUCCESS. A success
+            carrying a failure type is rejected rather than having the stray field ignored.
+          if:
+            properties:
+              result:
+                const: FAILURE
+            required: [result]
+          then:
+            required: [failureType]
+          else:
+            not:
+              required: [failureType]
+
+    Lease:
+      type: object
+      description: A caller's temporary, exclusive hold on a resource within a context.
+      required: [leaseId, resource, context, leasedAt, expiresAt]
+      properties:
+        leaseId:
+          type: string
+          description: |
+            Opaque handle for renew and release. Redundant with `resource` and `context` on purpose:
+            the client is told what it got without having to decode an id we declare opaque. On the
+            way back in, the id is the authority.
+        resource:
+          $ref: '#/components/schemas/ResourceId'
+        context:
+          $ref: '#/components/schemas/Context'
+        leasedAt:
+          type: string
+          format: date-time
+        expiresAt:
+          type: string
+          format: date-time
+          description: |
+            When the hold lapses unless renewed. Exclusive: the lease is still held at any instant
+            strictly before this.
+      additionalProperties: false
+
+    PoolEvent:
+      type: object
+      description: |
+        One thing the pool decided. Flat with a `type` discriminator: an SSE consumer switches on the
+        frame's `event:` name (which equals `type`) and reads the two or three fields that case has.
+
+        Which fields are present depends on `type`: `ACQUISITION_REJECTED` has no resource (nothing
+        was found to lend), and the resource-wide `RESOURCE_BLOCKLISTED` / `RESOURCE_UNBLOCKED` have
+        no context. Absent fields are omitted, never sent as null.
+      required: [type, at]
+      properties:
+        type:
+          type: string
+          enum:
+            - RESOURCE_COOLED
+            - RESOURCE_RECOVERED
+            - RESOURCE_BLOCKLISTED
+            - RESOURCE_UNBLOCKED
+            - RESOURCE_LEASED
+            - LEASE_RELEASED
+            - ACQUISITION_REJECTED
+        at:
+          type: string
+          format: date-time
+        resource:
+          $ref: '#/components/schemas/ResourceId'
+        context:
+          $ref: '#/components/schemas/Context'
+        until:
+          type: string
+          format: date-time
+          description: |
+            The deadline this event sets — cooldown end, lease expiry, or block expiry. Absent when
+            the event has no deadline, and absent on a permanent block.
+        permanent:
+          type: boolean
+          description: |
+            Present and true on a `RESOURCE_BLOCKLISTED` that never expires (released only by an
+            explicit unblock). Permanence is structure rather than a far-future timestamp, because
+            the engine's "forever" sentinel serialises to a year most date parsers reject.
+        cause:
+          $ref: '#/components/schemas/FailureType'
+      additionalProperties: false
+
+    RegisterResourceRequest:
+      type: object
+      required: [resource]
+      properties:
+        resource:
+          $ref: '#/components/schemas/ResourceId'
+      additionalProperties: false
+
+    AcquireLeaseRequest:
+      type: object
+      required: [context]
+      properties:
+        context:
+          $ref: '#/components/schemas/Context'
+      additionalProperties: false
+
+    ReportOutcomeRequest:
+      type: object
+      required: [resource, context, outcome]
+      properties:
+        resource:
+          $ref: '#/components/schemas/ResourceId'
+        context:
+          $ref: '#/components/schemas/Context'
+        outcome:
+          $ref: '#/components/schemas/Outcome'
+      additionalProperties: false
+
+    Problem:
+      type: object
+      description: RFC 9457 problem details — the one error shape of this surface.
+      required: [type, title, status]
+      properties:
+        type:
+          type: string
+          format: uri
+          description: |
+            Stable identifier for the problem kind. Branch on this, not on the human-readable
+            fields, which may be reworded.
+        title:
+          type: string
+          description: Short summary of the problem kind.
+        status:
+          type: integer
+          description: The HTTP status code, repeated so a logged payload is self-contained.
+        detail:
+          type: string
+          description: What went wrong with this particular request.
+      additionalProperties: false
