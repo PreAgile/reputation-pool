@@ -89,7 +89,7 @@ dependencies {
 
     // Linearizability checking for the concurrent facade (LeaseRegistry, ResourcePool).
     // slf4j-nop is inherited from testRuntimeOnly above, silencing Lincheck's slf4j warning too.
-    "lincheckTestImplementation"("org.jetbrains.lincheck:lincheck:3.6")
+    "lincheckTestImplementation"("org.jetbrains.lincheck:lincheck:3.7")
 }
 
 tasks.test {
