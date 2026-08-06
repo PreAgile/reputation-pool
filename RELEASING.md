@@ -202,9 +202,12 @@ breaking_against: https://github.com/${{ github.repository }}.git#ref=v0.5.0,sub
 #                                                                     ^^^^^^ bump to the new tag
 ```
 
-Do it in the same PR that prepares the release, or immediately after tagging. **A stale baseline
-still passes CI**, so nothing tells you it drifted — that is exactly why it belongs in this
-checklist and not in a reviewer's memory.
+**Do this in a follow-up PR, after the tag is pushed — never in the release-preparation PR.** The tag
+*is* the release trigger, so it does not exist yet while that PR is open; a `ref=` pointing at an
+unborn tag cannot be resolved and `proto-contract` fails on the very PR you are trying to land.
+
+**A stale baseline still passes CI**, so nothing tells you it drifted — that is exactly why it belongs
+in this checklist and not in a reviewer's memory.
 
 Why it matters: the check is only as good as what it compares against. If the baseline lags, a field
 added *after* it and removed later never registers as a removal, because relative to that old tag the
