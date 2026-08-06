@@ -71,12 +71,17 @@ jobs:
           # verdict without a commit here. Matches the version the guard was validated against.
           version: 1.71.0
           breaking: true
-          # Compare against the last released contract, not main: buf checks the proto definitions
-          # (messages, fields, services), which are path-independent, so diffing against the tag stays
-          # correct even though the proto moved modules (v0.2.0 shipped it under the server; it now
-          # lives under reputation-pool-grpc). subdir pins the module root in that release. Bump the
-          # tag when a newer release becomes the compatibility baseline.
-          breaking_against: https://github.com/${{ github.repository }}.git#ref=v0.2.0,subdir=reputation-pool-server/src/main/proto
+          # Compare against the LATEST released contract, not main and not an older tag: this must be
+          # the version consumers actually hold, or the gate stops guarding them. A stale baseline is
+          # not a harmless lag — a field added after the baseline and removed later never appears as a
+          # removal, because relative to that old tag it never existed.
+          #
+          # subdir pins the module root *within that release*, so it moves with the tag: the proto
+          # lived under reputation-pool-server up to v0.2.0 and under reputation-pool-grpc from v0.3.1
+          # (#66). Bumping ref without bumping subdir resolves nothing and the job fails.
+          #
+          # Keeping this current is a release step, not a chore to notice later — see RELEASING.md.
+          breaking_against: https://github.com/${{ github.repository }}.git#ref=v0.5.0,subdir=reputation-pool-grpc/src/main/proto
           # This job guards the contract only: lint/format would flag pre-existing style the issue
           # deliberately leaves alone, push needs a BSR token, and the PR comment needs write scope.
           lint: false
