@@ -190,3 +190,42 @@ current commit for you.) The workflow then runs `publishAndReleaseToMavenCentral
 module with the Central credentials and signing key from repository Secrets, and creates the GitHub
 Release. The manual `./gradlew publishToMavenCentral` steps above remain the local fallback for when
 you must publish by hand.
+
+### After the release: move the `buf breaking` baseline (#57)
+
+The proto compatibility gate in `ci.yml` compares against a released tag, and that tag has to be the
+one **consumers actually hold**. Point it at the release you just cut:
+
+```yaml
+# .github/workflows/ci.yml — job "Proto breaking-change check"
+breaking_against: https://github.com/${{ github.repository }}.git#ref=v0.5.0,subdir=reputation-pool-grpc/src/main/proto
+#                                                                     ^^^^^^ bump to the new tag
+```
+
+**Do this in a follow-up PR, once the Release workflow has finished successfully** — not in the
+release-preparation PR, and not merely once the tag exists. Two different failures sit on either side
+of that window:
+
+- **Too early — the tag does not exist yet.** The tag *is* the release trigger, so while the
+  preparation PR is open there is nothing for `ref=` to resolve, and `proto-contract` fails on the very
+  PR you are trying to land.
+- **Too late is safe; "tag exists" is not.** `release.yml` pushes the tag *before* it builds and
+  publishes (the `Tag the commit` step runs on manual dispatch ahead of `Build & test` and
+  `publishAndReleaseToMavenCentral`). If publishing then fails, the tag survives but the artifact never
+  reaches Central. Bumping the baseline to that tag points the gate at a contract **nobody can
+  consume**, and every incompatibility between the last real release and it stops being checked. That
+  is this same bug reflected: a baseline ahead of consumers is as blind as one behind them.
+
+So the trigger is a green Release run plus the artifact visible on Central (the smoke check in §5),
+not the tag by itself.
+
+**A stale baseline still passes CI**, so nothing tells you it drifted — that is exactly why it belongs
+in this checklist and not in a reviewer's memory.
+
+Why it matters: the check is only as good as what it compares against. If the baseline lags, a field
+added *after* it and removed later never registers as a removal, because relative to that old tag the
+field never existed. The gate stays green while the contract consumers hold quietly breaks.
+
+`subdir` pins the module root *inside that release*, so it travels with the tag — the proto lived
+under `reputation-pool-server` through v0.2.0 and under `reputation-pool-grpc` from v0.3.1 (#66). If a
+future release moves it again, bump both or the job fails to resolve the baseline.
