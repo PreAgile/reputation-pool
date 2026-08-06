@@ -202,9 +202,22 @@ breaking_against: https://github.com/${{ github.repository }}.git#ref=v0.5.0,sub
 #                                                                     ^^^^^^ bump to the new tag
 ```
 
-**Do this in a follow-up PR, after the tag is pushed — never in the release-preparation PR.** The tag
-*is* the release trigger, so it does not exist yet while that PR is open; a `ref=` pointing at an
-unborn tag cannot be resolved and `proto-contract` fails on the very PR you are trying to land.
+**Do this in a follow-up PR, once the Release workflow has finished successfully** — not in the
+release-preparation PR, and not merely once the tag exists. Two different failures sit on either side
+of that window:
+
+- **Too early — the tag does not exist yet.** The tag *is* the release trigger, so while the
+  preparation PR is open there is nothing for `ref=` to resolve, and `proto-contract` fails on the very
+  PR you are trying to land.
+- **Too late is safe; "tag exists" is not.** `release.yml` pushes the tag *before* it builds and
+  publishes (the `Tag the commit` step runs on manual dispatch ahead of `Build & test` and
+  `publishAndReleaseToMavenCentral`). If publishing then fails, the tag survives but the artifact never
+  reaches Central. Bumping the baseline to that tag points the gate at a contract **nobody can
+  consume**, and every incompatibility between the last real release and it stops being checked. That
+  is this same bug reflected: a baseline ahead of consumers is as blind as one behind them.
+
+So the trigger is a green Release run plus the artifact visible on Central (the smoke check in §5),
+not the tag by itself.
 
 **A stale baseline still passes CI**, so nothing tells you it drifted — that is exactly why it belongs
 in this checklist and not in a reviewer's memory.
