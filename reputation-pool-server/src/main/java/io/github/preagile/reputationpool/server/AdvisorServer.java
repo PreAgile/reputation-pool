@@ -15,6 +15,7 @@
  */
 package io.github.preagile.reputationpool.server;
 
+import io.github.preagile.reputationpool.core.domain.ResourceKind;
 import io.github.preagile.reputationpool.core.engine.AdaptiveCooldownPolicy;
 import io.github.preagile.reputationpool.core.engine.ReputationEngine;
 import io.github.preagile.reputationpool.core.pool.ResourcePool;
@@ -26,6 +27,8 @@ import io.github.preagile.reputationpool.grpc.EventBroadcaster;
 import io.github.preagile.reputationpool.grpc.ReputationAdvisorService;
 import io.github.preagile.reputationpool.persistence.PostgresAuditTrail;
 import io.github.preagile.reputationpool.persistence.PostgresResourceStore;
+import io.github.preagile.reputationpool.prober.RecoveryProbe;
+import io.github.preagile.reputationpool.prober.RecoveryScheduler;
 import io.grpc.Server;
 import io.grpc.ServerBuilder;
 import java.io.IOException;
@@ -33,7 +36,9 @@ import java.lang.System.Logger;
 import java.lang.System.Logger.Level;
 import java.time.Clock;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.concurrent.Executors;
@@ -61,6 +66,16 @@ import org.postgresql.ds.PGSimpleDataSource;
  * periodic purge that trims audit events older than the retention, riding the checkpointer's
  * scheduler with the same exception isolation. No retention means no purge task at all — the audit
  * trail then grows unbounded, exactly as before the knob existed.
+ *
+ * <p>When a {@code Map<ResourceKind, RecoveryProbe>} is supplied, the root also wires a
+ * {@link RecoveryScheduler}: a {@code COOLING} resource is never offered by {@code acquire}, so
+ * without this nothing lease-driven is left to report a success and let it probate out of
+ * {@code COOLING} into {@code RECOVERING} (see {@code ResourcePool#dueForRecoveryProbe}). From
+ * {@code RECOVERING} onward the resource is selectable again, so ordinary traffic — not further
+ * probing — is what carries it the rest of the way to {@code HEALTHY}; the scheduler's job ends the
+ * moment real traffic can take over. It sits in the same event fan-out as the broadcaster and audit
+ * sink, and its periodic backstop sweep rides the same scheduler thread as the checkpoint. No probes
+ * means no scheduler at all — recovery then stays exactly as unreachable as it always was.
  */
 public final class AdvisorServer {
 
@@ -79,6 +94,14 @@ public final class AdvisorServer {
     /** How often the retention task trims the audit trail, when retention is configured at all. */
     private static final Duration DEFAULT_AUDIT_PURGE_INTERVAL = Duration.ofHours(1);
 
+    /**
+     * How often the recovery backstop sweep runs, when recovery probes are configured at all. Chosen
+     * to match {@link #DEFAULT_CHECKPOINT_INTERVAL} for now, not measured against real probe latency
+     * or cooldown distributions — expect this to move once a real deployment's metrics exist to tune
+     * it from (see issue #87).
+     */
+    private static final Duration DEFAULT_RECOVERY_SWEEP_INTERVAL = Duration.ofSeconds(30);
+
     /** DB connection is env-driven; these are the variables {@link #main} reads. */
     private static final String ENV_DB_URL = "REPUTATION_POOL_DB_URL";
 
@@ -95,8 +118,9 @@ public final class AdvisorServer {
     private final Duration checkpointInterval;
     private final Clock clock;
     private final Optional<AuditRetention> auditRetention;
+    private final Optional<RecoveryScheduler> recoveryScheduler;
 
-    /** Started lazily in {@link #start()} only when a store is present; null otherwise. */
+    /** Started lazily in {@link #start()} only when a store or a recovery scheduler is present; null otherwise. */
     private ScheduledExecutorService checkpointer;
 
     private AdvisorServer(
@@ -105,7 +129,8 @@ public final class AdvisorServer {
             ResourcePool pool,
             Optional<ResourceStore> store,
             Clock clock,
-            Optional<AuditRetention> auditRetention) {
+            Optional<AuditRetention> auditRetention,
+            Optional<RecoveryScheduler> recoveryScheduler) {
         this.server = server;
         this.broadcaster = broadcaster;
         this.pool = pool;
@@ -113,6 +138,7 @@ public final class AdvisorServer {
         this.checkpointInterval = DEFAULT_CHECKPOINT_INTERVAL;
         this.clock = clock;
         this.auditRetention = auditRetention;
+        this.recoveryScheduler = recoveryScheduler;
     }
 
     /** Production assembly: system clock, default randomness, the default lease TTL, no store. */
@@ -122,7 +148,8 @@ public final class AdvisorServer {
 
     /** Test-friendly assembly with no store: every source of nondeterminism is handed in by the caller. */
     public static AdvisorServer create(int port, Clock clock, RandomGenerator random, Duration leaseTtl) {
-        return assemble(port, clock, random, leaseTtl, Optional.empty(), Optional.empty(), Optional.empty());
+        return assemble(
+                port, clock, random, leaseTtl, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty());
     }
 
     /**
@@ -134,7 +161,15 @@ public final class AdvisorServer {
     public static AdvisorServer create(
             int port, Clock clock, RandomGenerator random, Duration leaseTtl, ResourceStore store) {
         Objects.requireNonNull(store, "store must not be null");
-        return assemble(port, clock, random, leaseTtl, Optional.of(store), Optional.empty(), Optional.empty());
+        return assemble(
+                port,
+                clock,
+                random,
+                leaseTtl,
+                Optional.of(store),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty());
     }
 
     /**
@@ -155,7 +190,15 @@ public final class AdvisorServer {
             EventSink auditSink) {
         Objects.requireNonNull(store, "store must not be null");
         Objects.requireNonNull(auditSink, "auditSink must not be null");
-        return assemble(port, clock, random, leaseTtl, Optional.of(store), Optional.of(auditSink), Optional.empty());
+        return assemble(
+                port,
+                clock,
+                random,
+                leaseTtl,
+                Optional.of(store),
+                Optional.of(auditSink),
+                Optional.empty(),
+                Optional.empty());
     }
 
     /**
@@ -182,7 +225,72 @@ public final class AdvisorServer {
         Objects.requireNonNull(auditSink, "auditSink must not be null");
         Objects.requireNonNull(retention, "retention must not be null");
         return assemble(
-                port, clock, random, leaseTtl, Optional.of(store), Optional.of(auditSink), Optional.of(retention));
+                port,
+                clock,
+                random,
+                leaseTtl,
+                Optional.of(store),
+                Optional.of(auditSink),
+                Optional.of(retention),
+                Optional.empty());
+    }
+
+    /**
+     * The no-store assembly plus recovery probing: a {@link RecoveryScheduler} is wired into the event
+     * fan-out and its backstop sweep rides the periodic scheduler, exactly as the store-aware overloads
+     * ride it for checkpointing. Recovery does not require persistence — a resource still probates out
+     * of {@code COOLING} in an in-memory pool the same way it would in a durable one.
+     *
+     * @param recoveryProbes how to actively test a resource by its kind; a kind absent from this map is
+     *     never proactively probed (see {@code RecoveryScheduler}); never null
+     */
+    public static AdvisorServer create(
+            int port,
+            Clock clock,
+            RandomGenerator random,
+            Duration leaseTtl,
+            Map<ResourceKind, RecoveryProbe> recoveryProbes) {
+        Objects.requireNonNull(recoveryProbes, "recoveryProbes must not be null");
+        return assemble(
+                port,
+                clock,
+                random,
+                leaseTtl,
+                Optional.empty(),
+                Optional.empty(),
+                Optional.empty(),
+                Optional.of(recoveryProbes));
+    }
+
+    /**
+     * The fully durable assembly (store, audit sink, retention) plus recovery probing — every
+     * capability this composition root offers, combined.
+     *
+     * @param recoveryProbes how to actively test a resource by its kind; a kind absent from this map is
+     *     never proactively probed (see {@code RecoveryScheduler}); never null
+     */
+    public static AdvisorServer create(
+            int port,
+            Clock clock,
+            RandomGenerator random,
+            Duration leaseTtl,
+            ResourceStore store,
+            EventSink auditSink,
+            AuditRetention retention,
+            Map<ResourceKind, RecoveryProbe> recoveryProbes) {
+        Objects.requireNonNull(store, "store must not be null");
+        Objects.requireNonNull(auditSink, "auditSink must not be null");
+        Objects.requireNonNull(retention, "retention must not be null");
+        Objects.requireNonNull(recoveryProbes, "recoveryProbes must not be null");
+        return assemble(
+                port,
+                clock,
+                random,
+                leaseTtl,
+                Optional.of(store),
+                Optional.of(auditSink),
+                Optional.of(retention),
+                Optional.of(recoveryProbes));
     }
 
     /** The single assembler every overload family routes through. */
@@ -193,16 +301,29 @@ public final class AdvisorServer {
             Duration leaseTtl,
             Optional<ResourceStore> store,
             Optional<EventSink> auditSink,
-            Optional<AuditRetention> auditRetention) {
+            Optional<AuditRetention> auditRetention,
+            Optional<Map<ResourceKind, RecoveryProbe>> recoveryProbes) {
         Objects.requireNonNull(clock, "clock must not be null");
         Objects.requireNonNull(random, "random must not be null");
         Objects.requireNonNull(leaseTtl, "leaseTtl must not be null");
         EventBroadcaster broadcaster = new EventBroadcaster();
-        // With an audit sink the stream and the trail sit as siblings under one fan-out; the pool
-        // itself still holds exactly one sink, so the core stays untouched.
-        EventSink poolSink = auditSink
-                .<EventSink>map(audit -> new CompositeEventSink(List.of(broadcaster, audit)))
-                .orElse(broadcaster);
+
+        // RecoveryScheduler needs the pool it will call report() back into, but the pool needs its
+        // EventSink (which the scheduler joins) before it can be constructed — a genuine cycle, not an
+        // ordering oversight. A one-element forward reference breaks it: the sink below only starts
+        // forwarding once schedulerHolder[0] is set, which happens right after `pool` exists.
+        var schedulerHolder = new RecoveryScheduler[1];
+        var sinks = new ArrayList<EventSink>();
+        sinks.add(broadcaster);
+        auditSink.ifPresent(sinks::add);
+        recoveryProbes.ifPresent(ignored -> sinks.add(event -> {
+            RecoveryScheduler scheduler = schedulerHolder[0];
+            if (scheduler != null) {
+                scheduler.emit(event);
+            }
+        }));
+        EventSink poolSink = sinks.size() == 1 ? sinks.get(0) : new CompositeEventSink(List.copyOf(sinks));
+
         ResourcePool pool = new ResourcePool(
                 new ReputationEngine(new AdaptiveCooldownPolicy(), WINDOW_SIZE, COOL_AFTER, RECOVER_AFTER),
                 new WeightedRandomSelectionStrategy(),
@@ -213,15 +334,20 @@ public final class AdvisorServer {
         // Restore before the server is even built, so the pool is fully rehydrated before it can accept
         // a single request. load() empty means first run — nothing to restore, no PoolSnapshot.empty needed.
         store.ifPresent(s -> s.load().ifPresent(pool::restore));
+
+        Optional<RecoveryScheduler> recoveryScheduler =
+                recoveryProbes.map(probes -> new RecoveryScheduler(pool, probes, clock, random));
+        recoveryScheduler.ifPresent(scheduler -> schedulerHolder[0] = scheduler);
+
         Server server = ServerBuilder.forPort(port)
                 .addService(new ReputationAdvisorService(pool, broadcaster))
                 .build();
-        return new AdvisorServer(server, broadcaster, pool, store, clock, auditRetention);
+        return new AdvisorServer(server, broadcaster, pool, store, clock, auditRetention, recoveryScheduler);
     }
 
     public AdvisorServer start() throws IOException {
         server.start();
-        if (store.isPresent()) {
+        if (store.isPresent() || recoveryScheduler.isPresent()) {
             checkpointer = Executors.newSingleThreadScheduledExecutor(daemonThreadFactory());
             scheduleLifecycleTasks(checkpointer);
         }
@@ -229,11 +355,12 @@ public final class AdvisorServer {
     }
 
     /**
-     * Puts the periodic lifecycle chores on {@code scheduler}: always the checkpoint, plus the audit
-     * purge when retention is configured — no retention, no purge task, and the trail grows unbounded
-     * as before. Package-private so tests can hand in a recording scheduler and verify exactly what
-     * was scheduled (and run it), with no scheduler timing; {@link #start()} hands in the real
-     * checkpointer executor.
+     * Puts the periodic lifecycle chores on {@code scheduler}: always the checkpoint (a no-op without
+     * a store), the audit purge when retention is configured, and the recovery backstop sweep when
+     * recovery probes are configured — each chore already guards its own precondition internally, so
+     * scheduling all three unconditionally costs an absent one nothing but an idle tick. Package-private
+     * so tests can hand in a recording scheduler and verify exactly what was scheduled (and run it),
+     * with no scheduler timing; {@link #start()} hands in the real checkpointer executor.
      */
     void scheduleLifecycleTasks(ScheduledExecutorService scheduler) {
         scheduler.scheduleAtFixedRate(
@@ -243,6 +370,13 @@ public final class AdvisorServer {
                     this::purgeExpiredAuditEvents,
                     DEFAULT_AUDIT_PURGE_INTERVAL.toMillis(),
                     DEFAULT_AUDIT_PURGE_INTERVAL.toMillis(),
+                    TimeUnit.MILLISECONDS);
+        }
+        if (recoveryScheduler.isPresent()) {
+            scheduler.scheduleAtFixedRate(
+                    this::recoveryBackstopSweep,
+                    DEFAULT_RECOVERY_SWEEP_INTERVAL.toMillis(),
+                    DEFAULT_RECOVERY_SWEEP_INTERVAL.toMillis(),
                     TimeUnit.MILLISECONDS);
         }
     }
@@ -307,15 +441,29 @@ public final class AdvisorServer {
     }
 
     /**
+     * Probes every {@code COOLING} candidate {@code ResourcePool#dueForRecoveryProbe} reports due right
+     * now, when recovery probes are configured at all. {@link RecoveryScheduler#backstopSweep} is
+     * already exception-isolated per candidate for the same reason {@link #checkpoint()} is —
+     * {@code scheduleAtFixedRate} cancels all future runs the first time its task throws.
+     *
+     * <p>With no recovery probes configured this is a no-op.
+     */
+    void recoveryBackstopSweep() {
+        recoveryScheduler.ifPresent(RecoveryScheduler::backstopSweep);
+    }
+
+    /**
      * Orderly shutdown that leaves a consistent final checkpoint. In order: (1) stop the periodic
      * checkpointer and await its termination so any in-flight periodic save finishes and is drained
-     * before the final save — the two can then never overlap; (2) complete event streams so subscribers
-     * see a clean end instead of a transport reset; (3) drain in-flight RPCs within the grace period so
-     * the pool's state is final (any reports still arriving are applied first); (4) take one final
-     * checkpoint of that now-stable state, so a planned restart loses nothing.
+     * before the final save — the two can then never overlap; (2) stop accepting new recovery probes
+     * (in-flight ones are left to finish on their own, same as {@link RecoveryScheduler#close}
+     * documents); (3) complete event streams so subscribers see a clean end instead of a transport
+     * reset; (4) drain in-flight RPCs within the grace period so the pool's state is final (any reports
+     * still arriving are applied first); (5) take one final checkpoint of that now-stable state, so a
+     * planned restart loses nothing.
      *
      * <p>Every step is safe when no store is present — {@link #checkpoint()} is then a no-op and the
-     * checkpointer was never started.
+     * checkpointer was never started (unless recovery probes alone are what started it).
      */
     public void shutdown(Duration grace) throws InterruptedException {
         if (checkpointer != null) {
@@ -324,6 +472,7 @@ public final class AdvisorServer {
                 checkpointer.shutdownNow();
             }
         }
+        recoveryScheduler.ifPresent(RecoveryScheduler::close);
         broadcaster.close();
         server.shutdown();
         if (!server.awaitTermination(grace.toMillis(), TimeUnit.MILLISECONDS)) {

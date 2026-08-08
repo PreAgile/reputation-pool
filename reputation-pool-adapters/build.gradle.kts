@@ -35,6 +35,9 @@ mavenPublishing {
 dependencies {
     // Demo adapters depend inward on the pure core; the dependency arrow never points the other way.
     api(project(":reputation-pool-core"))
+    // HttpProxyRecoveryProbe implements RecoveryProbe (io.github.preagile.reputationpool.prober): the
+    // interface is part of this module's public API surface, so it is api, not implementation.
+    api(project(":reputation-pool-prober"))
     // Adapters may use frameworks (core may not). SLF4J is the only runtime dependency the demo needs.
     implementation("org.slf4j:slf4j-api:2.0.18")
 

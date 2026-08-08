@@ -7,13 +7,44 @@ Modules published to Maven Central share one version. **`reputation-pool-core`**
 engine — `io.github.preagile:reputation-pool-core`) has shipped since 0.1.0. Since 0.2.1 the
 **`reputation-pool-persistence`** (PostgreSQL adapter), **`reputation-pool-adapters`**, and
 **`reputation-pool-server`** modules are also published; the gRPC surface **`reputation-pool-grpc`**
-was extracted into its own module and published at 0.3.0. Internal test fixtures and integration-test
+was extracted into its own module and published at 0.3.0; **`reputation-pool-prober`** (the recovery
+scheduler) joins the published set as of this release. Internal test fixtures and integration-test
 source sets are not part of the published artifacts.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 aims to follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+A `COOLING` resource is never offered by `acquire`, so once its cooldown passes there was nothing
+lease-driven left to report a success and let it probate into `RECOVERING` — it stayed `COOLING`
+forever unless something called `report()` for it directly. `ProxyPoolIntegrationTest` already had to
+work around this by hand (a loop of manual `pool.report(...)` calls commented "no lease while
+cooling"); this release closes the gap with a real component instead of a hand-written test loop.
+
+### Added
+
+- **`reputation-pool-prober`** (new module) — `RecoveryProbe`, the per-`ResourceKind` contract for
+  actively testing a resource outside the lease flow, and `RecoveryScheduler`, which drives it off two
+  paths built together, not phased: an event-driven fast path (schedules a probe the moment a
+  `ResourceCooled` event names a cooldown deadline) and a periodic backstop sweep (catches whatever the
+  event path missed — a dropped event, or a restart between a cooldown firing and its scheduled probe).
+  A failed probe re-cools through the normal `report()` → `CooldownPolicy` path; no separate backoff is
+  invented. (#87)
+- **`ResourcePool.dueForRecoveryProbe(Instant now)`** (`reputation-pool-core`) — a small, pure,
+  read-only query: the `COOLING` cells past their own cooldown, excluding anything blocklisted or
+  currently leased under another context. Not a new `port` — `report()` already works without a lease,
+  so the missing piece was purely "who decides it's time, and who does the trying," an outer-module
+  concern. (#87)
+- **`HttpProxyRecoveryProbe`** (`reputation-pool-adapters`) — the reference `RecoveryProbe` for
+  `PROXY` resources (v1 scope: proxies only): a plain `java.net.http` request routed through the
+  candidate proxy at a fixed, lightweight target, classified by the same `OutcomeClassifier` normal
+  traffic uses. (#87)
+- **`AdvisorServer` recovery wiring** (`reputation-pool-server`) — two new `create(...)` overloads
+  accepting a `Map<ResourceKind, RecoveryProbe>`; the scheduler joins the existing event fan-out
+  alongside the broadcaster and audit sink, and its backstop sweep rides the same periodic scheduler
+  thread as the checkpoint. Recovery does not require a `ResourceStore` — an in-memory pool recovers
+  the same way a durable one does. (#87)
 
 ## [0.5.0] - 2026-07-22
 
