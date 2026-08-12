@@ -101,7 +101,7 @@ class RecoveryEndToEndTest {
         var endpoint = new ProxyEndpoint("demo", ProxyType.RESIDENTIAL, "localhost", wireMock.port(), null);
         ResourceId resourceId = endpoint.toResourceId();
         URI target = URI.create("http://reputation-pool.invalid/health");
-        RecoveryProbe httpProbe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), target);
+        RecoveryProbe httpProbe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), ctx -> Optional.of(target));
 
         var clock = new SettableClock(START);
         List<PoolEvent> recorded = new CopyOnWriteArrayList<>();

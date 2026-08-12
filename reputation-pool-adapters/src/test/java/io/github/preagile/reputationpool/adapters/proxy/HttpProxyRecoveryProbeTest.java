@@ -17,6 +17,7 @@ package io.github.preagile.reputationpool.adapters.proxy;
 
 import static com.github.tomakehurst.wiremock.client.WireMock.aResponse;
 import static com.github.tomakehurst.wiremock.client.WireMock.get;
+import static com.github.tomakehurst.wiremock.client.WireMock.getRequestedFor;
 import static com.github.tomakehurst.wiremock.client.WireMock.urlEqualTo;
 import static com.github.tomakehurst.wiremock.core.WireMockConfiguration.options;
 import static org.assertj.core.api.Assertions.assertThat;
@@ -29,7 +30,9 @@ import io.github.preagile.reputationpool.core.domain.Outcome;
 import io.github.preagile.reputationpool.core.domain.ResourceId;
 import java.net.URI;
 import java.time.Duration;
+import java.util.Map;
 import java.util.Optional;
+import java.util.function.Function;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -44,6 +47,8 @@ class HttpProxyRecoveryProbeTest {
 
     private static final Context CTX = new Context("cpeats");
     private static final URI TARGET = URI.create("http://reputation-pool.invalid/health");
+    /** The single-target case the javadoc describes: one URL shared by every context. */
+    private static final Function<Context, Optional<URI>> TARGETS = ctx -> Optional.of(TARGET);
 
     private WireMockServer wireMock;
     private ProxyEndpoint endpoint;
@@ -67,7 +72,7 @@ class HttpProxyRecoveryProbeTest {
     @Test
     void aHealthyResponseIsASuccess() {
         wireMock.stubFor(get(urlEqualTo("/health")).willReturn(aResponse().withStatus(200)));
-        var probe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), TARGET);
+        var probe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), TARGETS);
 
         Optional<Outcome> outcome = probe.test(resourceId, CTX);
 
@@ -78,7 +83,7 @@ class HttpProxyRecoveryProbeTest {
     @Test
     void anActiveBlockStatusClassifiesAsBlockedThroughTheSameClassifierRealTrafficUses() {
         wireMock.stubFor(get(urlEqualTo("/health")).willReturn(aResponse().withStatus(403)));
-        var probe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), TARGET);
+        var probe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), TARGETS);
 
         Optional<Outcome> outcome = probe.test(resourceId, CTX);
 
@@ -90,7 +95,7 @@ class HttpProxyRecoveryProbeTest {
     void anUnreachableProxyClassifiesAsATransportFailureNotAnException() {
         wireMock.stop(); // the endpoint no longer accepts connections
         var probe = new HttpProxyRecoveryProbe(
-                id -> Optional.of(endpoint), TARGET, new HttpProxyOutcomeClassifier(), Duration.ofSeconds(2));
+                id -> Optional.of(endpoint), TARGETS, new HttpProxyOutcomeClassifier(), Duration.ofSeconds(2));
 
         Optional<Outcome> outcome = probe.test(resourceId, CTX);
 
@@ -100,34 +105,79 @@ class HttpProxyRecoveryProbeTest {
 
     @Test
     void anUnresolvableResourceIsSkippedNotFailed() {
-        var probe = new HttpProxyRecoveryProbe(id -> Optional.empty(), TARGET);
+        var probe = new HttpProxyRecoveryProbe(id -> Optional.empty(), TARGETS);
 
         assertThat(probe.test(resourceId, CTX)).isEmpty();
     }
 
     @Test
+    void eachContextIsProbedAtItsOwnTargetThroughTheSameProbe() {
+        Context alpha = new Context("alpha");
+        Context beta = new Context("beta");
+        wireMock.stubFor(
+                get(urlEqualTo("/alpha/robots.txt")).willReturn(aResponse().withStatus(200)));
+        wireMock.stubFor(
+                get(urlEqualTo("/beta/robots.txt")).willReturn(aResponse().withStatus(403)));
+        // The map-backed resolver the javadoc describes; the hosts differ too, as two real sites would.
+        Map<Context, URI> byContext = Map.of(
+                alpha, URI.create("http://alpha.invalid/alpha/robots.txt"),
+                beta, URI.create("http://beta.invalid/beta/robots.txt"));
+        var probe =
+                new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), ctx -> Optional.ofNullable(byContext.get(ctx)));
+
+        Optional<Outcome> alphaOutcome = probe.test(resourceId, alpha);
+        Optional<Outcome> betaOutcome = probe.test(resourceId, beta);
+
+        // Each context's verdict comes from its own site: the same proxy is healthy for one and blocked
+        // for the other, which a single shared target could not have told apart.
+        assertThat(alphaOutcome).get().isInstanceOf(Outcome.Success.class);
+        assertThat(betaOutcome).get().isInstanceOf(Outcome.Failure.class);
+        assertThat(wireMock.findAll(getRequestedFor(urlEqualTo("/alpha/robots.txt"))))
+                .as("alpha's probe went to alpha's target")
+                .hasSize(1);
+        assertThat(wireMock.findAll(getRequestedFor(urlEqualTo("/beta/robots.txt"))))
+                .as("beta's probe went to beta's target")
+                .hasSize(1);
+    }
+
+    @Test
+    void aContextWithNoConfiguredTargetIsSkippedWithoutIssuingAnyRequest() {
+        wireMock.stubFor(get(urlEqualTo("/health")).willReturn(aResponse().withStatus(200)));
+        var probe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), ctx -> Optional.empty());
+
+        assertThat(probe.test(resourceId, CTX)).isEmpty();
+
+        // A skip, not a failure — and the request journal proves the proxy was never dialled at all,
+        // so an unmapped context costs nothing rather than being reported as a broken resource.
+        assertThat(wireMock.getAllServeEvents()).isEmpty();
+    }
+
+    @Test
     void rejectsNullConstructorArguments() {
-        assertThatThrownBy(() -> new HttpProxyRecoveryProbe(null, TARGET)).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new HttpProxyRecoveryProbe(null, TARGETS)).isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> new HttpProxyRecoveryProbe(id -> Optional.empty(), null))
                 .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new HttpProxyRecoveryProbe(
+                        id -> Optional.empty(), null, new HttpProxyOutcomeClassifier(), Duration.ofSeconds(1)))
+                .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(
-                        () -> new HttpProxyRecoveryProbe(id -> Optional.empty(), TARGET, null, Duration.ofSeconds(1)))
+                        () -> new HttpProxyRecoveryProbe(id -> Optional.empty(), TARGETS, null, Duration.ofSeconds(1)))
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> new HttpProxyRecoveryProbe(
-                        id -> Optional.empty(), TARGET, new HttpProxyOutcomeClassifier(), null))
+                        id -> Optional.empty(), TARGETS, new HttpProxyOutcomeClassifier(), null))
                 .isInstanceOf(NullPointerException.class);
     }
 
     @Test
     void rejectsANonPositiveTimeout() {
         assertThatThrownBy(() -> new HttpProxyRecoveryProbe(
-                        id -> Optional.empty(), TARGET, new HttpProxyOutcomeClassifier(), Duration.ZERO))
+                        id -> Optional.empty(), TARGETS, new HttpProxyOutcomeClassifier(), Duration.ZERO))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void rejectsNullArgumentsToTest() {
-        var probe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), TARGET);
+        var probe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), TARGETS);
         assertThatThrownBy(() -> probe.test(null, CTX)).isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> probe.test(resourceId, null)).isInstanceOf(NullPointerException.class);
     }
