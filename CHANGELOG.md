@@ -52,7 +52,10 @@ a probe for the four it can judge, and half-open admission — one real request 
   `Optional.empty()` — a skip, not a failure, and not even an `HttpClient` — matching what
   `RecoveryProbe` already documents for an unresolvable endpoint. A map-backed resolver is
   `ctx -> Optional.ofNullable(map.get(ctx))`; one target shared by every context is
-  `ctx -> Optional.of(uri)`. (#87, #90)
+  `ctx -> Optional.of(uri)`. The skip is logged at `WARN` **once per context**, because on its own it
+  is indistinguishable from "nothing was due" — an assembly that forgot a context would otherwise
+  never proactively probe anything cooled in it, silently. Once per context, not per probe: the
+  backstop sweep runs on a short period and repeating it would bury the message. (#87, #90, #100)
 - **`AdvisorServer` recovery wiring** (`reputation-pool-server`) — two new `create(...)` overloads
   accepting a `Map<ResourceKind, RecoveryProbe>`; the scheduler joins the existing event fan-out
   alongside the broadcaster and audit sink, and its backstop sweep rides the same periodic scheduler
