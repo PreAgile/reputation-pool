@@ -27,6 +27,11 @@ import io.github.preagile.reputationpool.core.domain.ReputationCell;
 import io.github.preagile.reputationpool.core.domain.ResourceId;
 import io.github.preagile.reputationpool.core.domain.ResourceKind;
 import io.github.preagile.reputationpool.core.domain.ResourceState;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -34,6 +39,7 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import org.flywaydb.core.Flyway;
+import org.flywaydb.core.api.MigrationVersion;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -159,5 +165,72 @@ class PostgresResourceStoreIT {
         store.save(empty);
 
         assertThat(store.load()).contains(empty);
+    }
+
+    @Test
+    @DisplayName("V6 backfills cooldown_cause on an existing V5 checkpoint from the newest window failure")
+    void v6BackfillsTheCoolingCauseOfAnExistingCheckpoint() throws SQLException {
+        // The other tests migrate a fresh schema, where the backfill has nothing to do. This one is
+        // about the upgrade path: V6 must leave a live checkpoint with the ownership decision it
+        // already had (the old code read the newest failure in the window), not reset every cooled
+        // cell to "cause unknown", which would hand cells cooled by a site block to the prober.
+        // @BeforeEach has already migrated to head; drop back to the pre-V6 schema to seed it
+        Flyway.configure().dataSource(dataSource).cleanDisabled(false).load().clean();
+        migrateTo("5");
+        seedV5Checkpoint();
+
+        migrateTo("6");
+
+        // p1 is COOLING: the newest *failure* wins, and the Success recorded after it is skipped, which
+        // is exactly what the removed backwards scan did
+        assertThat(cooldownCauseOf("p1")).isEqualTo("BLOCKED");
+        // p2 is COOLING but its window holds no failure at all — the conservative "not a block" answer
+        assertThat(cooldownCauseOf("p2")).isNull();
+        // p3 is HEALTHY: the column is only ever read for a cooling cell, so inventing a cause is noise
+        assertThat(cooldownCauseOf("p3")).isNull();
+    }
+
+    private void migrateTo(String version) {
+        Flyway.configure()
+                .dataSource(dataSource)
+                .cleanDisabled(false)
+                .target(MigrationVersion.fromVersion(version))
+                .load()
+                .migrate();
+    }
+
+    /** Writes rows in the shape V5 produced — no {@code cooldown_cause} column exists yet. */
+    private void seedV5Checkpoint() throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+                Statement statement = connection.createStatement()) {
+            statement.execute(
+                    """
+                    INSERT INTO cell (pool_id, resource_kind, resource_value, context, score,
+                        consecutive_failures, consecutive_successes, state, cooldown_until, updated_at)
+                    VALUES ('default', 'PROXY', 'p1', 'ctx', -30, 3, 0, 'COOLING', 0, 0),
+                           ('default', 'PROXY', 'p2', 'ctx', -5, 3, 0, 'COOLING', 0, 0),
+                           ('default', 'PROXY', 'p3', 'ctx', 10, 0, 2, 'HEALTHY', 0, 0)""");
+            statement.execute(
+                    """
+                    INSERT INTO cell_outcome (pool_id, resource_kind, resource_value, context, ordinal,
+                        success, failure_type, latency_ns)
+                    VALUES ('default', 'PROXY', 'p1', 'ctx', 0, false, 'TIMEOUT', 1),
+                           ('default', 'PROXY', 'p1', 'ctx', 1, false, 'BLOCKED', 1),
+                           ('default', 'PROXY', 'p1', 'ctx', 2, true, NULL, 1),
+                           ('default', 'PROXY', 'p2', 'ctx', 0, true, NULL, 1),
+                           ('default', 'PROXY', 'p3', 'ctx', 0, false, 'BLOCKED', 1)""");
+        }
+    }
+
+    private String cooldownCauseOf(String resourceValue) throws SQLException {
+        try (Connection connection = dataSource.getConnection();
+                PreparedStatement statement =
+                        connection.prepareStatement("SELECT cooldown_cause FROM cell WHERE resource_value = ?")) {
+            statement.setString(1, resourceValue);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                assertThat(resultSet.next()).as("cell %s exists", resourceValue).isTrue();
+                return resultSet.getString(1);
+            }
+        }
     }
 }
