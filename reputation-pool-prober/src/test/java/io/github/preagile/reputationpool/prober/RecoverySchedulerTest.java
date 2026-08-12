@@ -58,9 +58,9 @@ import org.junit.jupiter.api.Test;
  *
  * <p>Every test uses a real {@link ResourcePool} (it is a {@code final} class, not an interface) with
  * a tiny fixed {@link CooldownPolicy} so the engine's real cooldown curve is genuinely, not just
- * nominally, in play — a few tens of milliseconds rather than the hours an {@link
- * io.github.preagile.reputationpool.core.engine.AdaptiveCooldownPolicy} would need for a {@code
- * BLOCKED} failure. This keeps the tests fast while still exercising the real engine transitions
+ * nominally, in play — a few tens of milliseconds rather than the minutes an {@link
+ * io.github.preagile.reputationpool.core.engine.AdaptiveCooldownPolicy} would need for even the
+ * lightest failure. This keeps the tests fast while still exercising the real engine transitions
  * (COOLING → RECOVERING → HEALTHY), never a mock standing in for them. Waiting on background work
  * uses real {@link CountDownLatch}es and a small polling helper, matching this repo's other
  * concurrency tests (see {@code EventBroadcasterTest}) rather than pulling in a new test dependency.
@@ -80,8 +80,14 @@ class RecoverySchedulerTest {
                 engine, new WeightedRandomSelectionStrategy(), sink, clock, new Random(1), Duration.ofMinutes(5));
     }
 
-    private static Outcome blocked() {
-        return new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(1));
+    /**
+     * A transport failure, deliberately not a {@code BLOCKED} one: since #90 the pool hands a
+     * {@code BLOCKED}-cooled cell to half-open admission rather than to a prober, so
+     * {@code dueForRecoveryProbe} would never name it and the backstop tests below would pass
+     * vacuously. {@code TIMEOUT} is squarely the prober's half of that split.
+     */
+    private static Outcome timedOut() {
+        return new Outcome.Failure(FailureType.TIMEOUT, Duration.ofMillis(1));
     }
 
     private static Outcome success() {
@@ -126,7 +132,7 @@ class RecoverySchedulerTest {
         };
         try (var scheduler = new RecoveryScheduler(
                 pool, Map.of(ResourceKind.PROXY, alwaysHealthy), clock, new Random(1), Duration.ZERO)) {
-            pool.report(PROXY_1, CTX, blocked()); // -> COOLING; emits ResourceCooled into `recorded`
+            pool.report(PROXY_1, CTX, timedOut()); // -> COOLING; emits ResourceCooled into `recorded`
             assertThat(pool.acquire(CTX)).isEmpty(); // genuinely excluded, not a vacuous setup
 
             // The scheduled delay is computed from the clock, but the pool's own `now` (read again inside
@@ -147,7 +153,7 @@ class RecoverySchedulerTest {
         var clock = new SettableClock(NOW);
         var pool = poolWithTinyCooldown(clock, event -> {});
         pool.register(PROXY_1);
-        pool.report(PROXY_1, CTX, blocked()); // -> COOLING, but no scheduler was listening yet
+        pool.report(PROXY_1, CTX, timedOut()); // -> COOLING, but no scheduler was listening yet
 
         clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1)); // now past the cooldown
         var probed = new CountDownLatch(1);
@@ -169,7 +175,7 @@ class RecoverySchedulerTest {
         var pool = poolWithTinyCooldown(clock, event -> {});
         var account = new ResourceId(ResourceKind.ACCOUNT, "acc1");
         pool.register(account);
-        pool.report(account, CTX, blocked());
+        pool.report(account, CTX, timedOut());
         clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
 
         try (var scheduler = new RecoveryScheduler(
@@ -189,7 +195,7 @@ class RecoverySchedulerTest {
         var clock = new SettableClock(NOW);
         var pool = poolWithTinyCooldown(clock, event -> {});
         pool.register(PROXY_1);
-        pool.report(PROXY_1, CTX, blocked());
+        pool.report(PROXY_1, CTX, timedOut());
         clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
 
         var probed = new CountDownLatch(1);
@@ -211,7 +217,7 @@ class RecoverySchedulerTest {
         var clock = new SettableClock(NOW);
         var pool = poolWithTinyCooldown(clock, event -> {});
         pool.register(PROXY_1);
-        pool.report(PROXY_1, CTX, blocked());
+        pool.report(PROXY_1, CTX, timedOut());
         clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
 
         var attempts = new AtomicInteger();
@@ -247,7 +253,7 @@ class RecoverySchedulerTest {
         List<PoolEvent> recorded = new CopyOnWriteArrayList<>();
         var pool = poolWithTinyCooldown(clock, recorded::add);
         pool.register(PROXY_1);
-        pool.report(PROXY_1, CTX, blocked());
+        pool.report(PROXY_1, CTX, timedOut());
         PoolEvent.ResourceCooled cooled = firstCooledEvent(recorded);
         // Past the cooldown before any probe can land, so the eventual success genuinely satisfies the
         // engine's "cooldown has expired" check — same reasoning as the event-path test above.
@@ -300,7 +306,7 @@ class RecoverySchedulerTest {
             var id = new ResourceId(ResourceKind.PROXY, "p" + i);
             resources.add(id);
             pool.register(id);
-            pool.report(id, CTX, blocked());
+            pool.report(id, CTX, timedOut());
         }
         clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
 
@@ -361,7 +367,7 @@ class RecoverySchedulerTest {
         var clock = new SettableClock(NOW);
         var pool = poolWithTinyCooldown(clock, event -> {});
         pool.register(PROXY_1);
-        pool.report(PROXY_1, CTX, blocked());
+        pool.report(PROXY_1, CTX, timedOut());
         clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
 
         var scheduler = new RecoveryScheduler(

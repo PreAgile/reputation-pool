@@ -18,6 +18,7 @@ package io.github.preagile.reputationpool.core.pool;
 import io.github.preagile.reputationpool.core.domain.Blocklist;
 import io.github.preagile.reputationpool.core.domain.CellKey;
 import io.github.preagile.reputationpool.core.domain.Context;
+import io.github.preagile.reputationpool.core.domain.FailureType;
 import io.github.preagile.reputationpool.core.domain.Outcome;
 import io.github.preagile.reputationpool.core.domain.PoolEvent;
 import io.github.preagile.reputationpool.core.domain.PoolSnapshot;
@@ -146,8 +147,9 @@ public final class ResourcePool {
 
     /**
      * Leases one registered resource for {@code context}: a resource that is not blocklisted, not
-     * already leased, and in a selectable state ({@code HEALTHY} or {@code RECOVERING}), chosen by the
-     * strategy and weighted by reputation. Emits {@link PoolEvent.ResourceLeased} on success and
+     * already leased, and in a selectable state ({@code HEALTHY} or {@code RECOVERING}, plus the
+     * half-open case described on {@link #isSelectable}), chosen by the strategy and weighted by
+     * reputation. Emits {@link PoolEvent.ResourceLeased} on success and
      * {@link PoolEvent.AcquisitionRejected} when nothing is available, and reports the call's latency
      * and the resulting lease occupancy to the {@link MetricsSink}.
      *
@@ -192,7 +194,7 @@ public final class ResourcePool {
             if (cell == null) {
                 cell = ReputationCell.fresh(id, context, now);
             }
-            if (isSelectable(cell.state())) {
+            if (isSelectable(cell, now)) {
                 candidates.add(cell);
             }
         }
@@ -383,6 +385,12 @@ public final class ResourcePool {
      * probing a resource real traffic is using right now, or one an operator has explicitly isolated,
      * would defeat both.
      *
+     * <p>A cell cooled by a {@link FailureType#BLOCKED} is excluded too, and for a different reason:
+     * {@link #isSelectable} admits it as a half-open trial instead. The split is deliberate and total —
+     * a synthetic probe owns the four transport failures it can actually measure, half-open owns the
+     * one failure that lives in the site rather than the resource. No cell is ever both, so the two
+     * mechanisms never race to move the same cell out of {@code COOLING}.
+     *
      * @param now the instant to evaluate cooldown expiry against
      * @return the due candidates, in no particular order; empty if none are due
      * @throws NullPointerException if {@code now} is null
@@ -395,6 +403,9 @@ public final class ResourcePool {
             if (cell.state() != ResourceState.COOLING || now.isBefore(cell.cooldownUntil())) {
                 continue;
             }
+            if (cooledBySiteBlock(cell)) {
+                continue; // half-open admission owns this one; see isSelectable
+            }
             if (currentBlocklist.isBlocked(cell.resourceId(), now) || leases.isLeased(cell.resourceId(), now)) {
                 continue;
             }
@@ -403,8 +414,50 @@ public final class ResourcePool {
         return List.copyOf(due);
     }
 
-    private static boolean isSelectable(ResourceState state) {
-        return state == ResourceState.HEALTHY || state == ResourceState.RECOVERING;
+    /**
+     * The selection gate: {@code HEALTHY} and {@code RECOVERING} always, plus the half-open case —
+     * a {@code COOLING} cell whose cooldown has elapsed and whose cooling cause was
+     * {@link FailureType#BLOCKED}, which earns one trial request.
+     *
+     * <p>A block lives in the relationship between this resource and one specific site, not in the
+     * resource itself, so a synthetic probe against a neutral target cannot judge it: a {@code 200}
+     * from an unrelated URL says nothing about a site that is still refusing us. Real traffic is the
+     * only signal with full fidelity — whatever the workload does to get blocked is exactly what gets
+     * retried. That is the classic circuit-breaker half-open state, and the blast radius is already
+     * bounded by two guards that exist for other reasons: {@link #claim} skips any resource with a
+     * live lease, so at most one trial is ever in flight, and a cooled cell holds the lowest score
+     * among candidates, so {@link WeightedRandomSelectionStrategy} gives it only the exploration
+     * floor. Should the trial fail, {@code ReputationEngine}'s cooling guard has already lapsed with
+     * the cooldown, so it re-cools at the next step of the backoff curve.
+     */
+    private static boolean isSelectable(ReputationCell cell, Instant now) {
+        ResourceState state = cell.state();
+        if (state == ResourceState.HEALTHY || state == ResourceState.RECOVERING) {
+            return true;
+        }
+        return state == ResourceState.COOLING && !now.isBefore(cell.cooldownUntil()) && cooledBySiteBlock(cell);
+    }
+
+    /**
+     * Whether the failure that cooled this cell was a {@link FailureType#BLOCKED}, read back from the
+     * outcome window the cell already carries rather than from a new field — nothing to migrate,
+     * nothing to keep in sync with the engine.
+     *
+     * <p>The most recent {@code Failure} in the window is the incident that set
+     * {@code cooldownUntil}: the engine only ever cools on a failure. Later successes recorded while
+     * still cooling are skipped over, which is what the backwards scan is for. A window holding no
+     * failure at all — a freshly registered cell, or one restored with a window that has since rolled
+     * over — reads as "not a block", the conservative answer: it leaves the cell on the prober's side
+     * of the split instead of admitting real traffic on a guess.
+     */
+    private static boolean cooledBySiteBlock(ReputationCell cell) {
+        List<Outcome> window = cell.window();
+        for (int i = window.size() - 1; i >= 0; i--) {
+            if (window.get(i) instanceof Outcome.Failure failure) {
+                return failure.type() == FailureType.BLOCKED;
+            }
+        }
+        return false;
     }
 
     private static void requirePositive(Duration duration) {

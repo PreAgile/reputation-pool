@@ -24,11 +24,12 @@ import java.util.Objects;
  * A {@code (resource, context)} cell that {@link ResourcePool#dueForRecoveryProbe} has found sitting
  * in {@code COOLING} past its own cooldown, with nothing left to move it forward.
  *
- * <p>{@code acquire} never selects a {@code COOLING} cell, so once its {@link #cooldownUntil()} has
- * passed there is no lease-driven traffic left to report a success and let it probate into
- * {@code RECOVERING}. This value is what an outer-module prober (a {@code RecoveryProbe}, outside
- * this module) acts on: test the resource directly and {@link ResourcePool#report} the result, with
- * no lease involved.
+ * <p>{@code acquire} does not select such a cell — the one exception, a cell cooled by a site block,
+ * is admitted as a half-open trial and is therefore never reported here — so once its
+ * {@link #cooldownUntil()} has passed there is no lease-driven traffic left to report a success and
+ * let it probate into {@code RECOVERING}. This value is what an outer-module prober (a
+ * {@code RecoveryProbe}, outside this module) acts on: test the resource directly and
+ * {@link ResourcePool#report} the result, with no lease involved.
  */
 public record ProbeCandidate(ResourceId resource, Context context, Instant cooldownUntil) {
 

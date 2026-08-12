@@ -82,9 +82,9 @@ class AdvisorServerRecoveryTest {
     }
 
     /**
-     * Under {@link AdaptiveCooldownPolicy}'s real hours-scale curve (fixed inside this composition
+     * Under {@link AdaptiveCooldownPolicy}'s real minutes-to-hours curve (fixed inside this composition
      * root — not something its public API lets a caller shrink for a test), the event path's own
-     * {@code ResourceCooled} registration is a real, multi-hour-delayed scheduled task the instant a
+     * {@code ResourceCooled} registration is a real scheduled task minutes or hours out the instant a
      * resource cools. That is correct in production (the same real clock drives both the delay and
      * {@code report()}'s own {@code now}), but it means a single live server can never usefully be
      * driven through the event path inside a fast test.
@@ -102,13 +102,15 @@ class AdvisorServerRecoveryTest {
         var store = new FakeResourceStore();
         AdvisorServer beforeRestart = AdvisorServer.create(0, fixedClock(), new Random(42), TTL, store);
         beforeRestart.pool().register(PROXY);
-        // Default engine tuning (coolAfter = 2): two BLOCKED failures are needed to cool it.
-        beforeRestart.pool().report(PROXY, CTX, new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(1)));
-        beforeRestart.pool().report(PROXY, CTX, new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(1)));
+        // Default engine tuning (coolAfter = 2): two failures are needed to cool it. A TLS_HANDSHAKE and
+        // not a BLOCKED, because since #90 a site block is recovered by half-open admission rather than
+        // by a probe — dueForRecoveryProbe would never name it, and the sweep below would find nothing.
+        beforeRestart.pool().report(PROXY, CTX, new Outcome.Failure(FailureType.TLS_HANDSHAKE, Duration.ofMillis(1)));
+        beforeRestart.pool().report(PROXY, CTX, new Outcome.Failure(FailureType.TLS_HANDSHAKE, Duration.ofMillis(1)));
         beforeRestart.checkpoint(); // persists the COOLING cell; never start()ed, so no thread to leak
 
-        // Past the ~2h BLOCKED cooldown (coolAfter = 2: base 3600s x 2^1) by the time the "new process"
-        // looks at it.
+        // Past the 10m TLS_HANDSHAKE cooldown (coolAfter = 2: base 300s x 2^1) by the time the "new
+        // process" looks at it.
         var clock = new SettableClock(NOW.plus(Duration.ofHours(5)));
         var probed = new CountDownLatch(1);
         RecoveryProbe alwaysHealthy = (resource, context) -> {

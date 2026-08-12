@@ -35,10 +35,11 @@ import net.jqwik.api.constraints.IntRange;
 import net.jqwik.api.constraints.LongRange;
 
 /**
- * Property specification for {@link ResourcePool#dueForRecoveryProbe}: whatever the failure streak,
- * the elapsed time, or the two independent exclusion mechanisms (blocklist, another context's
- * lease), the query must agree exactly with the {@link AdaptiveCooldownPolicy} that put the cell
- * into {@code COOLING} in the first place. Unlike {@link ResourcePoolInvariantsPropertyTest} (a
+ * Property specification for {@link ResourcePool#dueForRecoveryProbe}: whatever the failure type, the
+ * failure streak, the elapsed time, or the two independent exclusion mechanisms (blocklist, another
+ * context's lease), the query must agree exactly with the {@link AdaptiveCooldownPolicy} that put the
+ * cell into {@code COOLING} in the first place — and must never name a cell cooled by a site block,
+ * which half-open admission owns instead (#90). Unlike {@link ResourcePoolInvariantsPropertyTest} (a
  * stateful shadow-model test over the whole facade), this attacks one query in isolation with a
  * directly computable oracle: the cooldown curve is a closed formula, so the expected cutoff instant
  * is known without inspecting pool internals.
@@ -61,9 +62,10 @@ class ResourcePoolDueForRecoveryProbePropertyTest {
     }
 
     @Property
-    @Label("a cooling cell is due iff now has reached the cooldown the policy computed, and never while "
-            + "blocklisted or leased under another context")
-    void agreesWithTheCooldownPolicyAndTheTwoExclusionMechanisms(
+    @Label("a cooling cell is due iff now has reached the cooldown the policy computed, its cause was not "
+            + "a site block, and it is neither blocklisted nor leased under another context")
+    void agreesWithTheCooldownPolicyAndTheThreeExclusionMechanisms(
+            @ForAll FailureType cause,
             @ForAll @IntRange(min = 1, max = 8) int consecutiveFailures,
             @ForAll @LongRange(min = -3600, max = 3600 * 130) long offsetSeconds,
             @ForAll boolean blocklisted,
@@ -73,7 +75,7 @@ class ResourcePoolDueForRecoveryProbePropertyTest {
         pool.register(RESOURCE);
 
         for (int i = 0; i < consecutiveFailures; i++) {
-            pool.report(RESOURCE, CTX, new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(1)));
+            pool.report(RESOURCE, CTX, new Outcome.Failure(cause, Duration.ofMillis(1)));
         }
         // All reports land at the same instant (the clock has not moved yet), so shouldCool's "already
         // cooling, do not re-extend" guard means only the failure that first crosses coolAfter ever sets
@@ -81,7 +83,7 @@ class ResourcePoolDueForRecoveryProbePropertyTest {
         // without recomputing it. The engine's own contract (ReputationEngine's class javadoc) is what
         // this oracle mirrors, not a detail of this test.
         boolean everCooled = consecutiveFailures >= COOL_AFTER;
-        Duration cooldown = new AdaptiveCooldownPolicy().cooldownFor(FailureType.BLOCKED, COOL_AFTER);
+        Duration cooldown = new AdaptiveCooldownPolicy().cooldownFor(cause, COOL_AFTER);
         Instant cooldownUntil = T0.plus(cooldown);
 
         // Order matters: acquire() refuses an already-blocklisted resource, but block() does not
@@ -98,7 +100,8 @@ class ResourcePoolDueForRecoveryProbePropertyTest {
         var due = pool.dueForRecoveryProbe(now);
 
         boolean cooldownElapsed = everCooled && !now.isBefore(cooldownUntil);
-        boolean expectedDue = cooldownElapsed && !blocklisted && !leasedUnderAnotherContext;
+        boolean expectedDue =
+                cooldownElapsed && cause != FailureType.BLOCKED && !blocklisted && !leasedUnderAnotherContext;
 
         if (expectedDue) {
             assertThat(due).containsExactly(new ProbeCandidate(RESOURCE, CTX, cooldownUntil));
