@@ -1,6 +1,8 @@
 plugins {
     `java-library`
     id("com.diffplug.spotless")
+    // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
+    id("info.solidsoft.pitest") version "1.19.0"
     // Version + apply-false live at the root (shared build service); applied here without a version.
     id("com.vanniktech.maven.publish")
 }
@@ -8,6 +10,8 @@ plugins {
 java {
     toolchain {
         // Same JDK 25 toolchain as the rest of the build; auto-provisioned by the Foojay resolver.
+        // Also the reason this module can lease one virtual thread per in-flight probe without a pool:
+        // JEP 491 (JDK 24+) means a probe blocking inside `synchronized` no longer pins its carrier.
         languageVersion = JavaLanguageVersion.of(25)
     }
 }
@@ -17,53 +21,35 @@ repositories {
 }
 
 // Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
-// this module's coordinates, name, and description live here. Published as the runnable reference host;
-// downstream consumers depend on reputation-pool-grpc for the contract, not on this server.
+// this module's coordinates, name, and description live here.
 mavenPublishing {
-    coordinates("io.github.preagile", "reputation-pool-server", project.version.toString())
+    coordinates("io.github.preagile", "reputation-pool-prober", project.version.toString())
     pom {
-        name = "Reputation Pool Server"
+        name = "Reputation Pool Recovery Prober"
         description =
-            "The reference gRPC server: a thin composition root that assembles the engine, the " +
-                "persistence adapter, and the reputation-pool-grpc contract into a runnable host."
+            "Closes the recovery gap acquire() leaves open: a COOLING resource is never offered as a " +
+                "candidate, so once its cooldown has passed nothing lease-driven is left to report a " +
+                "success and let it probate. RecoveryScheduler tests it directly instead, off an " +
+                "event-driven fast path plus a periodic backstop sweep."
     }
 }
 
-// Matches the reputation-pool-grpc baseline so the reference host runs on the same gRPC transport
-// version as the published stubs.
-val grpcVersion = "1.82.2"
-
 dependencies {
-    // The server ring depends inward on the pure core; the dependency arrow never points the other way.
+    // Depends only inward on the pure core, plus the JDK — no third-party runtime dependency, matching
+    // the sibling infrastructure modules (grpc, server), not the demo adapters' SLF4J choice. Resource-
+    // kind-specific RecoveryProbe implementations (e.g. an HTTP one for PROXY) live in an adapter module
+    // that depends on this one, not the other way around.
     api(project(":reputation-pool-core"))
 
-    // The gRPC surface (advisor.proto stubs + mapping/broadcaster/service) now lives in its own
-    // module; the server assembles it rather than owning it.
-    implementation(project(":reputation-pool-grpc"))
-
-    // RecoveryProbe appears directly in this module's public create(...) overloads, so it is api, not
-    // implementation — a caller wiring recovery probes needs the type on its own compile classpath.
-    api(project(":reputation-pool-prober"))
-
-    // The composition root wires the persistence adapter (a ResourceStore) into the pool's lifecycle.
-    // Versions match the persistence module so the driver/Flyway resolve to one artifact each.
-    implementation(project(":reputation-pool-persistence"))
-    implementation("org.postgresql:postgresql:42.7.13")
-    implementation("org.flywaydb:flyway-core:13.0.0")
-    runtimeOnly("org.flywaydb:flyway-database-postgresql:13.0.0")
-
-    // A concrete transport is only needed to actually run/serve; the grpc module brings the stub API.
-    runtimeOnly("io.grpc:grpc-netty-shaded:$grpcVersion")
-
-    // In-process transport: the server's lifecycle tests ride the real gRPC wiring without sockets.
-    testImplementation("io.grpc:grpc-inprocess:$grpcVersion")
     testImplementation(platform("org.junit:junit-bom:6.1.2"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    testImplementation("net.jqwik:jqwik:1.10.1")
     testImplementation("org.assertj:assertj-core:3.27.7")
-    // Shared test helpers from core (SettableClock) instead of per-module copies.
+    // Shared test helpers from core (SettableClock) instead of a per-module copy.
     testImplementation(testFixtures(project(":reputation-pool-core")))
+
+    // Teaches PIT to drive the JUnit Platform (Jupiter), same version as core.
+    pitest("org.pitest:pitest-junit5-plugin:1.2.3")
 }
 
 tasks.test {

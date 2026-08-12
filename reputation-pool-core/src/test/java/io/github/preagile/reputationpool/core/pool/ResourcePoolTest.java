@@ -232,6 +232,77 @@ class ResourcePoolTest {
     }
 
     @Test
+    void dueForRecoveryProbeIsEmptyWithNothingCooling() {
+        var pool = poolAt(fixed());
+        pool.register(proxy("p1"));
+        assertThat(pool.dueForRecoveryProbe(NOW)).isEmpty();
+    }
+
+    @Test
+    void dueForRecoveryProbeExcludesACoolingCellBeforeItsCooldownExpires() {
+        var pool = poolAt(fixed());
+        pool.register(proxy("p1"));
+        for (int i = 0; i < 3; i++) { // coolAfter = 3
+            pool.report(proxy("p1"), CTX, blocked());
+        }
+        // BLOCKED's cooldown is hours; NOW is still inside it
+        assertThat(pool.dueForRecoveryProbe(NOW)).isEmpty();
+    }
+
+    @Test
+    void dueForRecoveryProbeIncludesACoolingCellPastItsCooldown() {
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        for (int i = 0; i < 3; i++) { // coolAfter = 3, BLOCKED base 3600s x 2^(3-1) = 4h
+            pool.report(proxy("p1"), CTX, blocked());
+        }
+        Instant cooldownUntil = NOW.plus(Duration.ofHours(4));
+        Instant past = NOW.plusSeconds(5 * 3600); // past the BLOCKED cooldown
+        clock.set(past);
+
+        assertThat(pool.dueForRecoveryProbe(past)).containsExactly(new ProbeCandidate(proxy("p1"), CTX, cooldownUntil));
+    }
+
+    @Test
+    void dueForRecoveryProbeExcludesABlocklistedResourceEvenPastCooldown() {
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        for (int i = 0; i < 3; i++) {
+            pool.report(proxy("p1"), CTX, blocked());
+        }
+        pool.block(proxy("p1"), Duration.ofDays(1)); // separate mechanism from the cell's own state
+        clock.set(NOW.plusSeconds(5 * 3600));
+
+        assertThat(pool.dueForRecoveryProbe(clock.instant())).isEmpty();
+    }
+
+    @Test
+    void dueForRecoveryProbeExcludesAResourceCurrentlyLeasedUnderAnotherContext() {
+        var clock = new SettableClock(NOW);
+        // A TTL that outlives the 5h jump below: this test is about the exclusion itself, not about
+        // lease expiry timing (covered separately elsewhere in this file).
+        var engine = new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 3, 2);
+        var pool = new ResourcePool(
+                engine, new WeightedRandomSelectionStrategy(), sink, metrics, clock, new Random(1), Duration.ofDays(1));
+        var otherContext = new Context("baemin");
+        pool.register(proxy("p1"));
+        for (int i = 0; i < 3; i++) {
+            pool.report(proxy("p1"), CTX, blocked()); // CTX's cell cools
+        }
+        assertThat(pool.acquire(otherContext)).isPresent(); // leases are exclusive per resource id, not per cell
+        clock.set(NOW.plusSeconds(5 * 3600));
+
+        assertThat(pool.dueForRecoveryProbe(clock.instant())).isEmpty();
+    }
+
+    @Test
+    void dueForRecoveryProbeRejectsNullNow() {
+        assertThatThrownBy(() -> poolAt(fixed()).dueForRecoveryProbe(null)).isInstanceOf(NullPointerException.class);
+    }
+
+    @Test
     void rejectsNullConstructorArgumentsAndNonPositiveTtl() {
         var engine = new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 3, 2);
         var strategy = new WeightedRandomSelectionStrategy();

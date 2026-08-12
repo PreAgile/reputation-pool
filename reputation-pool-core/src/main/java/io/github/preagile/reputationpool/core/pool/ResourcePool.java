@@ -370,6 +370,39 @@ public final class ResourcePool {
         registered.addAll(snapshot.registered());
     }
 
+    /**
+     * The {@code (resource, context)} cells stuck in {@code COOLING} past their own cooldown — the
+     * mirror image of {@link #isSelectable}'s filter in {@link #claim}. {@code acquire} never selects
+     * a {@code COOLING} cell, so once {@code cooldownUntil} has passed there is no lease-driven
+     * traffic left to report a success and let it probate into {@code RECOVERING}: without an outer
+     * component calling {@link #report} for it directly, it would stay {@code COOLING} forever.
+     *
+     * <p>This is a read-only query, not a decision: it names candidates, it does not act on them. A
+     * candidate already blocklisted or currently leased (by another context — see {@link LeaseRegistry})
+     * is excluded, mirroring the two guards {@link #claim} applies before checking selectability —
+     * probing a resource real traffic is using right now, or one an operator has explicitly isolated,
+     * would defeat both.
+     *
+     * @param now the instant to evaluate cooldown expiry against
+     * @return the due candidates, in no particular order; empty if none are due
+     * @throws NullPointerException if {@code now} is null
+     */
+    public List<ProbeCandidate> dueForRecoveryProbe(Instant now) {
+        Objects.requireNonNull(now, "now must not be null");
+        Blocklist currentBlocklist = blocklist.get();
+        var due = new ArrayList<ProbeCandidate>();
+        for (ReputationCell cell : cells.values()) {
+            if (cell.state() != ResourceState.COOLING || now.isBefore(cell.cooldownUntil())) {
+                continue;
+            }
+            if (currentBlocklist.isBlocked(cell.resourceId(), now) || leases.isLeased(cell.resourceId(), now)) {
+                continue;
+            }
+            due.add(new ProbeCandidate(cell.resourceId(), cell.context(), cell.cooldownUntil()));
+        }
+        return List.copyOf(due);
+    }
+
     private static boolean isSelectable(ResourceState state) {
         return state == ResourceState.HEALTHY || state == ResourceState.RECOVERING;
     }
