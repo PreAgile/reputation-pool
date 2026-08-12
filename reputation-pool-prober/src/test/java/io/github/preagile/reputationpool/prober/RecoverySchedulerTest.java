@@ -213,6 +213,40 @@ class RecoverySchedulerTest {
     }
 
     @Test
+    void aCooldownCausedByASiteBlockIsNotProbedOnTheEventPathEither() throws Exception {
+        // The event path used to schedule off every ResourceCooled, so in an assembly that wires this
+        // scheduler as an event sink a BLOCKED-cooled cell got a synthetic probe anyway — the very cell
+        // dueForRecoveryProbe excludes because only real traffic can judge a site block. Both paths have
+        // to apply the same rule or the split is not a partition (#99).
+        var clock = new SettableClock(NOW);
+        List<PoolEvent> recorded = new CopyOnWriteArrayList<>();
+        var pool = poolWithTinyCooldown(clock, recorded::add);
+        pool.register(PROXY_1);
+
+        var probed = new AtomicInteger();
+        RecoveryProbe alwaysHealthy = (resource, context) -> {
+            probed.incrementAndGet();
+            return Optional.of(success());
+        };
+        try (var scheduler = new RecoveryScheduler(
+                pool, Map.of(ResourceKind.PROXY, alwaysHealthy), clock, new Random(1), Duration.ZERO)) {
+            pool.report(PROXY_1, CTX, new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(1)));
+            clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
+
+            scheduler.emit(firstCooledEvent(recorded));
+            scheduler.backstopSweep(); // the other path already excluded it; assert they now agree
+
+            Thread.sleep(200); // long enough for a (wrongly) scheduled zero-jitter probe to have fired
+            assertThat(probed)
+                    .as("a site block is half-open's to retry, not the prober's")
+                    .hasValue(0);
+            // and the cell is left for acquire's half-open admission, exactly where the split puts it
+            assertThat(stateOf(pool, PROXY_1, CTX)).isEqualTo(ResourceState.COOLING);
+            assertThat(pool.acquire(CTX)).isPresent();
+        }
+    }
+
+    @Test
     void aProbeThatThrowsIsIsolatedAndFreesTheKeyForTheNextAttempt() throws Exception {
         var clock = new SettableClock(NOW);
         var pool = poolWithTinyCooldown(clock, event -> {});

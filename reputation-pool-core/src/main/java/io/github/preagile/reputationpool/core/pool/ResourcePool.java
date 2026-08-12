@@ -181,7 +181,39 @@ public final class ResourcePool {
         return lease;
     }
 
-    /** The selection-and-claim core of {@link #acquire}, returning the lease or empty at {@code now}. */
+    /**
+     * The selection-and-claim core of {@link #acquire}, returning the lease or empty at {@code now}.
+     *
+     * <p><b>On the gap between reading a cell and claiming its lease.</b> {@code isSelectable} is
+     * evaluated against a cell read from the map, and {@code leases.tryAcquire} runs after it, so a
+     * concurrent {@link #report} can replace that cell in between and this method can grant on a
+     * version that no longer exists. No ownership reservation spanning the two is taken, deliberately:
+     *
+     * <ul>
+     *   <li><b>The half-open/probe partition survives it.</b> Both halves read {@code cooldownCause}
+     *       and {@code cooldownUntil}, and a cell is one immutable record swapped by a single
+     *       reference write — so on any <em>one</em> version the two predicates are disjoint by
+     *       construction. For a stale read to put a cell in both halves at once, its cause must have
+     *       changed, which only happens on the branch that also pushes {@code cooldownUntil} a whole
+     *       cooldown into the future; the other mechanism cannot claim the cell until that has
+     *       elapsed. So the interleaving needs a thread parked mid-method for minutes to hours, across
+     *       a stretch of code that blocks on nothing.
+     *   <li><b>An ownership reservation here would not close the window that does exist.</b>
+     *       {@link #dueForRecoveryProbe} is a query, and its caller dispatches the probe later (the
+     *       prober jitters by seconds and runs it on another thread). The gap that matters is between
+     *       that decision and the probe actually running, not between this check and this claim —
+     *       closing it properly means the prober holding a real lease for the probe's lifetime, a
+     *       design change, not a lock here.
+     *   <li><b>What a stale read costs is bounded and small.</b> One extra real request on a resource
+     *       that has just re-cooled, whose outcome flows back through the same {@code cells.compute}
+     *       as any other. Once the lease exists it excludes the resource from
+     *       {@link #dueForRecoveryProbe} for its whole lifetime.
+     * </ul>
+     *
+     * <p>The blocklist is the one gate that does <em>not</em> tolerate a stale read — an operator's
+     * explicit isolation must never be bypassed — which is why it alone gets the post-claim re-check
+     * and undo below.
+     */
     private Optional<Lease> claim(Context context, Instant now) {
         Blocklist currentBlocklist = blocklist.get();
 
