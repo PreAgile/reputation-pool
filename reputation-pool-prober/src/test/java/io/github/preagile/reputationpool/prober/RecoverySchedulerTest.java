@@ -46,6 +46,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 import org.junit.jupiter.api.RepeatedTest;
@@ -68,6 +69,7 @@ import org.junit.jupiter.api.Test;
 class RecoverySchedulerTest {
 
     private static final Context CTX = new Context("cpeats");
+    private static final Context OTHER_CTX = new Context("baemin");
     private static final ResourceId PROXY_1 = new ResourceId(ResourceKind.PROXY, "p1");
     private static final Instant NOW = Instant.parse("2026-07-08T00:00:00Z");
     private static final Duration TINY_COOLDOWN = Duration.ofMillis(60);
@@ -119,7 +121,7 @@ class RecoverySchedulerTest {
     }
 
     @Test
-    void resourceCooledEventProbesAndFullyRecoversTheResourceWithNoLeaseEverTaken() throws Exception {
+    void resourceCooledEventProbesAndFullyRecoversTheResourceOutsideTheLeaseFlow() throws Exception {
         var clock = new SettableClock(NOW);
         List<PoolEvent> recorded = new CopyOnWriteArrayList<>();
         var pool = poolWithTinyCooldown(clock, recorded::add);
@@ -387,6 +389,219 @@ class RecoverySchedulerTest {
         }
     }
 
+    // --- a failed probe re-arms the fast path (#93) ---
+
+    @Test
+    void aFailedProbeSchedulesTheNextOneWithoutWaitingForABackstopSweep() throws Exception {
+        // The regression #93 describes: report() fans its events out synchronously on the probe's own
+        // thread, so a failed probe's ResourceCooled arrives back in emit() while that probe is still
+        // finishing. With the dedupe key still held, the re-schedule was dropped and every retry after
+        // the first failure fell to the backstop — the fast path was dead after one attempt. Nothing
+        // here calls backstopSweep(): the second probe can only come from the first one's own outcome.
+        var clock = new SettableClock(NOW);
+        var schedulerHolder = new RecoveryScheduler[1];
+        // The scheduler is the pool's event sink, which is the wiring this bug lives in (AdvisorServer
+        // builds the same cycle the same way).
+        var pool = poolWithTinyCooldown(clock, event -> schedulerHolder[0].emit(event));
+        pool.register(PROXY_1);
+
+        var attempts = new AtomicInteger();
+        var secondAttempt = new CountDownLatch(1);
+        RecoveryProbe alwaysFailing = (resource, context) -> {
+            if (attempts.incrementAndGet() >= 2) {
+                secondAttempt.countDown();
+            }
+            return Optional.of(timedOut());
+        };
+        try (var scheduler = new RecoveryScheduler(
+                pool, Map.of(ResourceKind.PROXY, alwaysFailing), clock, new Random(1), Duration.ZERO)) {
+            schedulerHolder[0] = scheduler;
+            pool.report(PROXY_1, CTX, timedOut()); // -> COOLING; the event path schedules probe #1
+
+            // The timers run on real time while the pool reads this fixed clock, so the waiting thread
+            // stands in for wall time: without it a re-scheduled probe would fire at an instant where
+            // its own cooldown has not elapsed yet, and be skipped for a legitimate reason.
+            awaitTrue(
+                    () -> {
+                        clock.advance(TINY_COOLDOWN);
+                        return secondAttempt.getCount() == 0;
+                    },
+                    Duration.ofSeconds(5));
+        }
+    }
+
+    // --- a probe owns the resource for its duration (#102) ---
+
+    @Test
+    void aProbeHoldsTheResourceForItsWholeDurationSoRealTrafficCannotLeaseIt() throws Exception {
+        var clock = new SettableClock(NOW);
+        var pool = poolWithTinyCooldown(clock, event -> {});
+        pool.register(PROXY_1);
+        pool.report(PROXY_1, CTX, timedOut());
+        clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
+
+        var probing = new CountDownLatch(1);
+        var finishProbe = new CountDownLatch(1);
+        RecoveryProbe slow = (resource, context) -> {
+            probing.countDown();
+            try {
+                finishProbe.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
+            return Optional.of(success());
+        };
+        try (var scheduler =
+                new RecoveryScheduler(pool, Map.of(ResourceKind.PROXY, slow), clock, new Random(1), Duration.ZERO)) {
+            scheduler.backstopSweep();
+            assertThat(probing.await(2, TimeUnit.SECONDS)).isTrue();
+
+            // OTHER_CTX's cell for this resource has never failed, so it is HEALTHY and would be lent
+            // immediately — leases are per resource id, so this is real traffic reaching for the very
+            // resource a probe is using right now.
+            assertThat(pool.acquire(OTHER_CTX))
+                    .as("real traffic must not get a resource while a probe is using it")
+                    .isEmpty();
+
+            finishProbe.countDown();
+            awaitTrue(() -> acquireAndRelease(pool, OTHER_CTX), Duration.ofSeconds(2));
+        }
+    }
+
+    @Test
+    void aProbeWhoseResourceWasTakenByRealTrafficInTheMeantimeIsSkipped() throws Exception {
+        // The gap #102 is about: the cell was a candidate when the probe was scheduled, and traffic
+        // leased the resource during the delay before it fired. Skipping is the right answer — traffic
+        // got there first, and its outcome is a better recovery signal than a synthetic one.
+        var clock = new SettableClock(NOW);
+        List<PoolEvent> recorded = new CopyOnWriteArrayList<>();
+        var pool = poolWithTinyCooldown(clock, recorded::add);
+        pool.register(PROXY_1);
+        pool.report(PROXY_1, CTX, timedOut());
+        PoolEvent.ResourceCooled cooled = firstCooledEvent(recorded);
+        clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
+
+        var probed = new AtomicInteger();
+        RecoveryProbe counting = (resource, context) -> {
+            probed.incrementAndGet();
+            return Optional.of(success());
+        };
+        // An `until` a few hundred millis out: the same delay production gets from jitter, and the
+        // window in which the resource is owned by nobody.
+        var laterCooled = new PoolEvent.ResourceCooled(
+                cooled.resource(), cooled.context(), cooled.at(), NOW.plusMillis(300), cooled.cause());
+        try (var scheduler = new RecoveryScheduler(
+                pool, Map.of(ResourceKind.PROXY, counting), clock, new Random(1), Duration.ZERO)) {
+            scheduler.emit(laterCooled);
+            assertThat(pool.acquire(OTHER_CTX)).isPresent(); // traffic wins the race for the resource
+
+            Thread.sleep(600); // long past the scheduled dispatch
+            assertThat(probed).as("a probe must not run alongside real traffic").hasValue(0);
+            assertThat(stateOf(pool, PROXY_1, CTX))
+                    .as("and must not have reported anything about a resource it never tested")
+                    .isEqualTo(ResourceState.COOLING);
+        }
+    }
+
+    @RepeatedTest(10)
+    void aBackstopSweepTheEventPathAndRealTrafficRacingOneCellNeverOverlap() throws Exception {
+        var clock = new SettableClock(NOW);
+        List<PoolEvent> recorded = new CopyOnWriteArrayList<>();
+        var pool = poolWithTinyCooldown(clock, recorded::add);
+        pool.register(PROXY_1);
+        pool.report(PROXY_1, CTX, timedOut());
+        PoolEvent.ResourceCooled cooled = firstCooledEvent(recorded);
+        clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
+
+        var probesInFlight = new AtomicInteger();
+        var concurrentProbes = new AtomicInteger();
+        var trafficSawAProbe = new AtomicBoolean();
+        var probesRun = new AtomicInteger();
+        var trafficLeases = new AtomicInteger();
+        // Declining ("cannot test this right now") reports nothing, so the cell stays COOLING for the
+        // whole race and both paths keep finding it — a probe that recovered the cell would end the
+        // race after one attempt and prove much less.
+        RecoveryProbe declining = (resource, context) -> {
+            probesRun.incrementAndGet();
+            concurrentProbes.accumulateAndGet(probesInFlight.incrementAndGet(), Math::max);
+            try {
+                Thread.sleep(2); // hold the resource long enough for the other two to collide with it
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                probesInFlight.decrementAndGet();
+            }
+            return Optional.empty();
+        };
+        try (var scheduler = new RecoveryScheduler(
+                pool, Map.of(ResourceKind.PROXY, declining), clock, new Random(1), Duration.ZERO)) {
+            // The three keep going until both sides have had the resource at least once, so the run ends
+            // on evidence rather than on a fixed iteration count: whoever holds it, the other simply
+            // fails to get in, and a race where only one side ever won would prove nothing.
+            var stop = new AtomicBoolean();
+            var racers = Executors.newFixedThreadPool(4);
+            try {
+                racers.execute(() -> repeatUntil(stop, scheduler::backstopSweep));
+                racers.execute(() -> repeatUntil(stop, () -> scheduler.emit(cooled)));
+                for (int t = 0; t < 2; t++) {
+                    racers.execute(() -> repeatUntil(stop, () -> {
+                        var lease = pool.acquire(OTHER_CTX);
+                        if (lease.isPresent()) {
+                            trafficLeases.incrementAndGet();
+                            if (probesInFlight.get() > 0) {
+                                trafficSawAProbe.set(true);
+                            }
+                            pool.release(lease.get());
+                        }
+                    }));
+                }
+                awaitTrue(() -> probesRun.get() > 0 && trafficLeases.get() > 0, Duration.ofSeconds(10));
+            } finally {
+                stop.set(true);
+                racers.shutdown();
+                assertThat(racers.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+            }
+
+            awaitTrue(() -> probesInFlight.get() == 0, Duration.ofSeconds(2));
+            assertThat(trafficSawAProbe)
+                    .as("a lease was granted while a probe held the same resource")
+                    .isFalse();
+            assertThat(concurrentProbes)
+                    .as("the same cell was probed twice at once")
+                    .hasValueLessThanOrEqualTo(1);
+        }
+    }
+
+    /** Runs {@code action} until {@code stop} is set, pausing between turns so no racer monopolizes the cell. */
+    private static void repeatUntil(AtomicBoolean stop, Runnable action) {
+        while (!stop.get()) {
+            action.run();
+            try {
+                Thread.sleep(1);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
+    }
+
+    /** Takes a lease if one is available and gives it straight back, reporting whether it got one. */
+    private static boolean acquireAndRelease(ResourcePool pool, Context context) {
+        var lease = pool.acquire(context);
+        lease.ifPresent(pool::release);
+        return lease.isPresent();
+    }
+
+    private static void awaitLatch(CountDownLatch latch) {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException(e);
+        }
+    }
+
     @Test
     void rejectsNullConstructorArguments() {
         var clock = new SettableClock(NOW);
@@ -403,6 +618,8 @@ class RecoverySchedulerTest {
                 .isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> new RecoveryScheduler(pool, probes, clock, random, null))
                 .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> new RecoveryScheduler(pool, probes, clock, random, Duration.ZERO, null))
+                .isInstanceOf(NullPointerException.class);
     }
 
     @Test
@@ -410,6 +627,18 @@ class RecoverySchedulerTest {
         var clock = new SettableClock(NOW);
         var pool = poolWithTinyCooldown(clock, event -> {});
         assertThatThrownBy(() -> new RecoveryScheduler(pool, Map.of(), clock, new Random(1), Duration.ofMillis(-1)))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void rejectsANonPositiveProbeLeaseTtl() {
+        var clock = new SettableClock(NOW);
+        var pool = poolWithTinyCooldown(clock, event -> {});
+        var random = new Random(1);
+        assertThatThrownBy(() -> new RecoveryScheduler(pool, Map.of(), clock, random, Duration.ZERO, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() ->
+                        new RecoveryScheduler(pool, Map.of(), clock, random, Duration.ZERO, Duration.ofSeconds(-1)))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 

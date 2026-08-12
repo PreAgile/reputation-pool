@@ -27,13 +27,17 @@ import io.github.preagile.reputationpool.core.engine.ReputationEngine;
 import io.github.preagile.reputationpool.core.testing.SettableClock;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Optional;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 import org.junit.jupiter.api.Test;
 
 /**
@@ -60,6 +64,9 @@ class ResourcePoolRecoveryOwnershipConcurrencyTest {
     private static final ResourceId RESOURCE = new ResourceId(ResourceKind.PROXY, "p1");
     private static final Instant T0 = Instant.parse("2026-07-08T00:00:00Z");
     private static final Duration TTL = Duration.ofMinutes(5);
+    /** Bounded by a probe's own budget, the way a prober sizes it; long enough never to expire mid-test. */
+    private static final Duration PROBE_TTL = Duration.ofSeconds(15);
+
     private static final int COOL_AFTER = 3;
     private static final int ROUNDS = 200;
     private static final int OBSERVERS = 2;
@@ -176,6 +183,113 @@ class ResourcePoolRecoveryOwnershipConcurrencyTest {
         assertThat(granted)
                 .as("the trial is one real request, not one per thread")
                 .hasValue(1);
+    }
+
+    /**
+     * The other half of ownership (#102): the two mechanisms are partitioned by cause, but the
+     * <em>resource</em> is shared, and a probe now holds a real lease on it for as long as it runs. So
+     * a probe claim and a traffic lease must never be live at the same instant, however hard both sides
+     * push. The cell probed here is {@code COOLING} for {@link #CTX} with a transport cause and never
+     * reported on again, so it stays claimable by the prober for the whole run, while the same
+     * resource's cell in another context stays {@code HEALTHY} and claimable by traffic — the exact
+     * overlap the old point-in-time {@code isLeased} guard allowed.
+     */
+    @Test
+    void aProbeClaimAndARealLeaseAreNeverHeldAtTheSameTime() throws Exception {
+        var clock = new SettableClock(T0);
+        ResourcePool pool = freshPool(clock);
+        pool.register(RESOURCE);
+        for (int i = 0; i < COOL_AFTER; i++) {
+            pool.report(RESOURCE, CTX, new Outcome.Failure(FailureType.TIMEOUT, Duration.ofMillis(1)));
+        }
+        clock.set(T0.plus(Duration.ofDays(1))); // past the cooldown: the cell is the prober's to claim
+
+        var otherContext = new Context("baemin");
+        var holders = new AtomicInteger();
+        var overlapped = new AtomicBoolean();
+        var probeClaims = new AtomicInteger();
+        var trafficLeases = new AtomicInteger();
+        var starved = new AtomicReference<String>();
+        int threadsPerSide = 8;
+        int holdsPerThread = 25;
+
+        var start = new CountDownLatch(1);
+        try (ExecutorService workers = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < threadsPerSide; i++) {
+                // Each side retries until it wins rather than counting lucky attempts: the lease is the
+                // only thing that can refuse either of them here (nothing re-reports the cell, nothing
+                // blocklists the resource), so a side that cannot get in at all within the deadline is a
+                // real defect, and both counters below are then exact rather than probabilistic.
+                workers.execute(() -> repeatedlyHold(
+                        holdsPerThread,
+                        "probe",
+                        starved,
+                        () -> pool.tryAcquireForProbe(RESOURCE, CTX, clock.instant(), PROBE_TTL),
+                        lease -> {
+                            probeClaims.incrementAndGet();
+                            hold(holders, overlapped);
+                            pool.release(lease);
+                        },
+                        start));
+                workers.execute(() -> repeatedlyHold(
+                        holdsPerThread,
+                        "traffic",
+                        starved,
+                        () -> pool.acquire(otherContext),
+                        lease -> {
+                            trafficLeases.incrementAndGet();
+                            hold(holders, overlapped);
+                            pool.release(lease);
+                        },
+                        start));
+            }
+            start.countDown();
+        }
+
+        assertThat(overlapped)
+                .as("a probe and real traffic held the same resource at the same time")
+                .isFalse();
+        assertThat(starved.get()).as("one side never got the resource at all").isNull();
+        // Not vacuous: both sides took the resource, in full, over the run.
+        assertThat(probeClaims.get()).isEqualTo(threadsPerSide * holdsPerThread);
+        assertThat(trafficLeases.get()).isEqualTo(threadsPerSide * holdsPerThread);
+    }
+
+    /** Wins the resource {@code holds} times, retrying while the other side has it. */
+    private static void repeatedlyHold(
+            int holds,
+            String side,
+            AtomicReference<String> starved,
+            Supplier<Optional<Lease>> attempt,
+            Consumer<Lease> holdAndRelease,
+            CountDownLatch start) {
+        await(start);
+        for (int i = 0; i < holds; i++) {
+            long deadlineNanos = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            Optional<Lease> won = attempt.get();
+            while (won.isEmpty()) {
+                if (System.nanoTime() > deadlineNanos) {
+                    starved.compareAndSet(null, side);
+                    return;
+                }
+                Thread.yield();
+                won = attempt.get();
+            }
+            holdAndRelease.accept(won.get());
+        }
+    }
+
+    /**
+     * Counts one holder for the span a caller owns the resource. The decrement happens before the
+     * release so the count can never double-count a hand-off: the next winner cannot be granted
+     * anything until the release that follows.
+     */
+    private static void hold(AtomicInteger holders, AtomicBoolean overlapped) {
+        if (holders.incrementAndGet() > 1) {
+            overlapped.set(true);
+        }
+        Thread.onSpinWait(); // widen the window a little; a hold that returns instantly races nothing
+        holders.decrementAndGet();
     }
 
     private static ResourcePool freshPool(SettableClock clock) {

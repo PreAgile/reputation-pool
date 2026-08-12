@@ -28,8 +28,15 @@ import java.util.Objects;
  * is admitted as a half-open trial and is therefore never reported here — so once its
  * {@link #cooldownUntil()} has passed there is no lease-driven traffic left to report a success and
  * let it probate into {@code RECOVERING}. This value is what an outer-module prober (a
- * {@code RecoveryProbe}, outside this module) acts on: test the resource directly and
- * {@link ResourcePool#report} the result, with no lease involved.
+ * {@code RecoveryProbe}, outside this module) acts on: claim the resource with
+ * {@link ResourcePool#tryAcquireForProbe} when the probe is actually dispatched, test it, release the
+ * claim, and {@link ResourcePool#report} the result.
+ *
+ * <p>Naming a candidate takes nothing: this record is the answer to a query, not a reservation, so it
+ * carries no ownership of the resource and nothing has to be released if it is dropped. Ownership is
+ * taken at dispatch instead, because the gap the prober has to survive is the one between being named
+ * here and running (#102), and holding the resource across that gap would take it away from real
+ * traffic for a jitter delay in which no probe is running.
  */
 public record ProbeCandidate(ResourceId resource, Context context, Instant cooldownUntil) {
 

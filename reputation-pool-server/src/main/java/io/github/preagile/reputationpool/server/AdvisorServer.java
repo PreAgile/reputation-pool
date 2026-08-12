@@ -99,6 +99,12 @@ public final class AdvisorServer {
      * to match {@link #DEFAULT_CHECKPOINT_INTERVAL} for now, not measured against real probe latency
      * or cooldown distributions — expect this to move once a real deployment's metrics exist to tune
      * it from (see issue #87).
+     *
+     * <p>It is also half the shortest cooldown this assembly can produce — {@code SLOW}'s 30s base at
+     * the first cooling step ({@link #COOL_AFTER} = 2, so the curve doubles it) is 60s — which is why
+     * 30s is a sane backstop and not an arbitrary number: a cell the event path misses waits at most
+     * half a cooldown for the sweep to find it. Widening this widens that worst case for every cell the
+     * fast path does not carry.
      */
     private static final Duration DEFAULT_RECOVERY_SWEEP_INTERVAL = Duration.ofSeconds(30);
 

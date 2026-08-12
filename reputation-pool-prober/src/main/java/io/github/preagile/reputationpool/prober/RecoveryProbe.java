@@ -22,9 +22,9 @@ import io.github.preagile.reputationpool.core.domain.ResourceKind;
 import java.util.Optional;
 
 /**
- * Actively tests one resource outside the lease flow — the thing {@link RecoveryScheduler} calls for
- * every {@code (resource, context)} it decides is due, so the resulting {@link Outcome} can be
- * {@code report}ed with no lease ever taken.
+ * Actively tests one resource outside the ordinary lease flow — the thing {@link RecoveryScheduler}
+ * calls for every {@code (resource, context)} it decides is due, so the resulting {@link Outcome} can
+ * be {@code report}ed without waiting for traffic that a {@code COOLING} cell never gets.
  *
  * <p>An open contract, one implementation per {@link ResourceKind}: what "test it" means is entirely
  * resource-specific (an HTTP call through a proxy, a lightweight auth check for an account), so this
@@ -33,7 +33,10 @@ import java.util.Optional;
  *
  * <p>{@code test} may be called concurrently for different resources; {@link RecoveryScheduler} never
  * calls it twice at once for the <em>same</em> {@code (resource, context)}, so an implementation needs
- * no internal locking for that case.
+ * no internal locking for that case. For the duration of the call the scheduler holds a real lease on
+ * the resource, so no lease-driven traffic is using it at the same time either — an implementation may
+ * do something a concurrent request would disturb (or be disturbed by), as long as it stays cheap
+ * enough to finish inside the probe lease's TTL.
  */
 public interface RecoveryProbe {
 
