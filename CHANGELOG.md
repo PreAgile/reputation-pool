@@ -38,8 +38,14 @@ cooling"); this release closes the gap with a real component instead of a hand-w
   concern. (#87)
 - **`HttpProxyRecoveryProbe`** (`reputation-pool-adapters`) — the reference `RecoveryProbe` for
   `PROXY` resources (v1 scope: proxies only): a plain `java.net.http` request routed through the
-  candidate proxy at a fixed, lightweight target, classified by the same `OutcomeClassifier` normal
-  traffic uses. (#87)
+  candidate proxy at a lightweight target, classified by the same `OutcomeClassifier` normal traffic
+  uses. The target is resolved **per `Context`** through a `Function<Context, Optional<URI>>`, because
+  sites differ in network path and CDN: latency and reset behaviour measured against an unrelated host
+  say nothing about the route real traffic takes. A context with no configured target yields
+  `Optional.empty()` — a skip, not a failure, and not even an `HttpClient` — matching what
+  `RecoveryProbe` already documents for an unresolvable endpoint. A map-backed resolver is
+  `ctx -> Optional.ofNullable(map.get(ctx))`; one target shared by every context is
+  `ctx -> Optional.of(uri)`. (#87, #90)
 - **`AdvisorServer` recovery wiring** (`reputation-pool-server`) — two new `create(...)` overloads
   accepting a `Map<ResourceKind, RecoveryProbe>`; the scheduler joins the existing event fan-out
   alongside the broadcaster and audit sink, and its backstop sweep rides the same periodic scheduler

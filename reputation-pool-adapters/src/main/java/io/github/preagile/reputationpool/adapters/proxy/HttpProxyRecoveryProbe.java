@@ -34,18 +34,34 @@ import java.util.function.Function;
 
 /**
  * The reference {@link RecoveryProbe} for {@code PROXY} resources: a plain {@code java.net.http}
- * request routed through the candidate proxy at a fixed, lightweight {@code target}, classified by
- * the same {@link OutcomeClassifier} normal traffic would use — this is a health check, not the
- * operation real traffic performs, so the target should be cheap and stable (a status endpoint, not
- * the site being scraped).
+ * request routed through the candidate proxy at a lightweight target resolved from the
+ * {@link Context} being probed, classified by the same {@link OutcomeClassifier} normal traffic
+ * would use.
+ *
+ * <p><strong>Choosing a target.</strong> It should be cheap and stable, and it should live
+ * <em>on the site this context actually uses</em> — a status path, a static asset, {@code
+ * robots.txt}. Two mistakes to avoid, in opposite directions. Do not point it at the expensive
+ * operation real traffic performs: this is a health check, and a probe that costs as much as the
+ * workload is not one. But do not point it at an unrelated third-party host either, however cheap
+ * and stable that host is: a different site means a different network path and a different CDN, so
+ * the latency and reset behaviour measured there say nothing about the route real traffic will take
+ * through this proxy. The cheap-and-stable half and the same-site half are both requirements; a
+ * target that satisfies only one is not a signal about the context it is standing in for. See #90
+ * for the wider split between what a synthetic probe can judge and what only real traffic can.
+ *
+ * <p>{@code targets} is that mapping, supplied by the composition root: a context with no configured
+ * target yields {@link Optional#empty()} from {@link #test} — a skip, not a failure, matching
+ * {@link RecoveryProbe}'s contract, and costing not even an {@link HttpClient}. Nothing more than a
+ * {@link Function} is needed here, so nothing more is asked for: a map-backed resolver is {@code ctx
+ * -> Optional.ofNullable(map.get(ctx))}, and one target shared by every context is {@code ctx ->
+ * Optional.of(uri)}.
  *
  * <p>{@link RecoveryScheduler} calls {@link #test} with only a {@link ResourceId} — an opaque value
  * the core never parses (see {@link ProxyEndpoint#toResourceId()}) — so this probe needs a way back
  * to the actual {@code host:port} to dial. That is {@code endpoints}, supplied by the composition
  * root: whatever registered the resource in the first place already holds that mapping, and the core
  * has no reason to know it. A resource that no longer resolves (deregistered since it cooled) yields
- * {@link Optional#empty()} from {@code endpoints} and, in turn, from {@link #test} — a skip, not a
- * failure, matching {@link RecoveryProbe}'s contract.
+ * {@link Optional#empty()} from {@code endpoints} and, in turn, from {@link #test} — the same skip.
  *
  * <p>Blocking is intentional: {@link RecoveryScheduler} dispatches each probe on its own virtual
  * thread (JEP 491), so a synchronous {@link HttpClient#send} pins nothing.
@@ -56,7 +72,7 @@ public final class HttpProxyRecoveryProbe implements RecoveryProbe {
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
 
     private final Function<ResourceId, Optional<ProxyEndpoint>> endpoints;
-    private final URI target;
+    private final Function<Context, Optional<URI>> targets;
     private final OutcomeClassifier classifier;
     private final Duration timeout;
 
@@ -65,18 +81,21 @@ public final class HttpProxyRecoveryProbe implements RecoveryProbe {
      * {@link #DEFAULT_TIMEOUT}.
      *
      * @param endpoints resolves a {@link ResourceId} back to the proxy to dial; empty means "skip"
-     * @param target the fixed, lightweight URL to fetch through the candidate proxy
-     * @throws NullPointerException if {@code endpoints} or {@code target} is null
+     * @param targets resolves a {@link Context} to the lightweight URL to fetch on that context's own
+     *     site; empty means "skip"
+     * @throws NullPointerException if {@code endpoints} or {@code targets} is null
      */
-    public HttpProxyRecoveryProbe(Function<ResourceId, Optional<ProxyEndpoint>> endpoints, URI target) {
-        this(endpoints, target, new HttpProxyOutcomeClassifier(), DEFAULT_TIMEOUT);
+    public HttpProxyRecoveryProbe(
+            Function<ResourceId, Optional<ProxyEndpoint>> endpoints, Function<Context, Optional<URI>> targets) {
+        this(endpoints, targets, new HttpProxyOutcomeClassifier(), DEFAULT_TIMEOUT);
     }
 
     /**
      * Creates a probe with a configurable classifier and timeout.
      *
      * @param endpoints resolves a {@link ResourceId} back to the proxy to dial; empty means "skip"
-     * @param target the fixed, lightweight URL to fetch through the candidate proxy
+     * @param targets resolves a {@link Context} to the lightweight URL to fetch on that context's own
+     *     site; empty means "skip"
      * @param classifier turns the raw HTTP response or transport error into an {@link Outcome}
      * @param timeout the connect-and-response budget before the attempt counts as a timeout
      * @throws NullPointerException if any argument is null
@@ -84,11 +103,11 @@ public final class HttpProxyRecoveryProbe implements RecoveryProbe {
      */
     public HttpProxyRecoveryProbe(
             Function<ResourceId, Optional<ProxyEndpoint>> endpoints,
-            URI target,
+            Function<Context, Optional<URI>> targets,
             OutcomeClassifier classifier,
             Duration timeout) {
         this.endpoints = Objects.requireNonNull(endpoints, "endpoints must not be null");
-        this.target = Objects.requireNonNull(target, "target must not be null");
+        this.targets = Objects.requireNonNull(targets, "targets must not be null");
         this.classifier = Objects.requireNonNull(classifier, "classifier must not be null");
         Objects.requireNonNull(timeout, "timeout must not be null");
         if (timeout.isZero() || timeout.isNegative()) {
@@ -110,9 +129,15 @@ public final class HttpProxyRecoveryProbe implements RecoveryProbe {
         if (endpoint.isEmpty()) {
             return Optional.empty();
         }
+        // Resolved before the client is built: an unconfigured context costs no HttpClient, and
+        // therefore no selector thread and executor to close again.
+        Optional<URI> target = targets.apply(context);
+        if (target.isEmpty()) {
+            return Optional.empty();
+        }
 
         HttpRequest request =
-                HttpRequest.newBuilder(target).timeout(timeout).GET().build();
+                HttpRequest.newBuilder(target.get()).timeout(timeout).GET().build();
 
         // The client is per-probe because its proxy selector is: each candidate dials a different
         // host:port, so it cannot be shared or cached. An HttpClient owns a selector thread and an
