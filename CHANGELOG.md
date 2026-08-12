@@ -22,6 +22,12 @@ forever unless something called `report()` for it directly. `ProxyPoolIntegratio
 work around this by hand (a loop of manual `pool.report(...)` calls commented "no lease while
 cooling"); this release closes the gap with a real component instead of a hand-written test loop.
 
+That component is only a faithful signal for four of the five `FailureType`s, though. `SLOW`,
+`TIMEOUT`, `CONNECTION_RESET`, and `TLS_HANDSHAKE` all live in the resource itself, so a request to a
+neutral target measures them directly; `BLOCKED` lives in the relationship between one resource and
+one site, and a `200` from an unrelated URL says nothing about it. Recovery therefore splits by cause:
+a probe for the four it can judge, and half-open admission — one real request — for the one it cannot.
+
 ### Added
 
 - **`reputation-pool-prober`** (new module) — `RecoveryProbe`, the per-`ResourceKind` contract for
@@ -32,10 +38,11 @@ cooling"); this release closes the gap with a real component instead of a hand-w
   A failed probe re-cools through the normal `report()` → `CooldownPolicy` path; no separate backoff is
   invented. (#87)
 - **`ResourcePool.dueForRecoveryProbe(Instant now)`** (`reputation-pool-core`) — a small, pure,
-  read-only query: the `COOLING` cells past their own cooldown, excluding anything blocklisted or
-  currently leased under another context. Not a new `port` — `report()` already works without a lease,
-  so the missing piece was purely "who decides it's time, and who does the trying," an outer-module
-  concern. (#87)
+  read-only query: the `COOLING` cells past their own cooldown, excluding anything blocklisted,
+  currently leased under another context, or cooled by a `BLOCKED` (which half-open admission owns
+  instead — see below). Not a new `port` — `report()` already works without a lease, so the missing
+  piece was purely "who decides it's time, and who does the trying," an outer-module concern.
+  (#87, #90)
 - **`HttpProxyRecoveryProbe`** (`reputation-pool-adapters`) — the reference `RecoveryProbe` for
   `PROXY` resources (v1 scope: proxies only): a plain `java.net.http` request routed through the
   candidate proxy at a lightweight target, classified by the same `OutcomeClassifier` normal traffic
@@ -51,6 +58,20 @@ cooling"); this release closes the gap with a real component instead of a hand-w
   alongside the broadcaster and audit sink, and its backstop sweep rides the same periodic scheduler
   thread as the checkpoint. Recovery does not require a `ResourceStore` — an in-memory pool recovers
   the same way a durable one does. (#87)
+
+### Changed
+
+- **`acquire` admits a half-open trial for a resource cooled by a site block** (`reputation-pool-core`)
+  — a `COOLING` cell whose cooldown has elapsed and whose cooling cause was `BLOCKED` is selectable
+  again for exactly one real request, the classic circuit-breaker half-open state. Real traffic is the
+  only signal with full fidelity here: whatever the workload does to get blocked is exactly what gets
+  retried, where a probe against a neutral target would report a `Success` that observed nothing and
+  promote the cell for a site still refusing it. The blast radius needed no new machinery — the lease
+  registry already caps it at one in-flight trial, `WeightedRandomSelectionStrategy` gives the
+  lowest-scored candidate only its exploration floor, and a failed trial re-cools on the next step of
+  the same backoff curve. The cooling cause is read back from the outcome window the cell already
+  carries, so there is no new domain field and no schema migration; a window holding no failure reads
+  conservatively as "not a block". (#90)
 
 ## [0.5.0] - 2026-07-22
 

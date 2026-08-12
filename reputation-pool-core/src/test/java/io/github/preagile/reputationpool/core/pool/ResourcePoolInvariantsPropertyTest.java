@@ -47,8 +47,13 @@ import net.jqwik.api.Provide;
  * <ul>
  *   <li>a blocklisted resource is never lent,
  *   <li>a resource is never leased twice at the same instant,
- *   <li>a cooling resource is not lendable until its cooldown has expired and a success reported.
+ *   <li>a cooling resource is not lendable while its cooldown is still running.
  * </ul>
+ *
+ * <p>The third invariant is stated at the cooldown boundary rather than "not lendable until a success
+ * is reported" because {@code REPORT_BLOCKED} is this sequence's only failure op: every cooled cell
+ * here was cooled by a site block, so once its cooldown elapses half-open admission (#90) may lend it
+ * one trial request. Inside the cooldown nothing may lend it, whatever the cause.
  *
  * <p>The test drives the pool through a generated action sequence while maintaining a shadow model
  * of what must be true. Cooldown transitions are learned from the emitted {@link PoolEvent}s, never
@@ -124,9 +129,10 @@ class ResourcePoolInvariantsPropertyTest {
                         assertThat(held)
                                 .as("%s was lent while already leased", lent)
                                 .doesNotContainKey(lent);
-                        assertThat(coolingUntil)
-                                .as("cooling %s was lent at %s", lent, now)
-                                .doesNotContainKey(lent);
+                        Instant cooling = coolingUntil.get(lent);
+                        assertThat(cooling == null || !now.isBefore(cooling))
+                                .as("cooling %s was lent at %s, inside its cooldown (until %s)", lent, now, cooling)
+                                .isTrue();
                         held.put(lent, lease.get());
                     }
                 }
