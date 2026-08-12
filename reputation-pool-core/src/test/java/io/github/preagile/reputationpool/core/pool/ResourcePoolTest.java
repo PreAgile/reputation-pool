@@ -73,8 +73,20 @@ class ResourcePoolTest {
         return new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(1));
     }
 
+    /** A transport failure — the prober's half of the split, as opposed to {@link #blocked()}. */
+    private static Outcome timedOut() {
+        return new Outcome.Failure(FailureType.TIMEOUT, Duration.ofMillis(1));
+    }
+
     private static Outcome success() {
         return new Outcome.Success(Duration.ofMillis(1));
+    }
+
+    /** Reports {@code coolAfter} identical failures, which is what drives a fresh cell into COOLING. */
+    private static void coolWith(ResourcePool pool, ResourceId resource, Outcome failure) {
+        for (int i = 0; i < 3; i++) { // coolAfter = 3
+            pool.report(resource, CTX, failure);
+        }
     }
 
     @Test
@@ -242,10 +254,8 @@ class ResourcePoolTest {
     void dueForRecoveryProbeExcludesACoolingCellBeforeItsCooldownExpires() {
         var pool = poolAt(fixed());
         pool.register(proxy("p1"));
-        for (int i = 0; i < 3; i++) { // coolAfter = 3
-            pool.report(proxy("p1"), CTX, blocked());
-        }
-        // BLOCKED's cooldown is hours; NOW is still inside it
+        coolWith(pool, proxy("p1"), timedOut());
+        // TIMEOUT's cooldown is minutes; NOW is still inside it
         assertThat(pool.dueForRecoveryProbe(NOW)).isEmpty();
     }
 
@@ -254,14 +264,25 @@ class ResourcePoolTest {
         var clock = new SettableClock(NOW);
         var pool = poolAt(clock);
         pool.register(proxy("p1"));
-        for (int i = 0; i < 3; i++) { // coolAfter = 3, BLOCKED base 3600s x 2^(3-1) = 4h
-            pool.report(proxy("p1"), CTX, blocked());
-        }
-        Instant cooldownUntil = NOW.plus(Duration.ofHours(4));
-        Instant past = NOW.plusSeconds(5 * 3600); // past the BLOCKED cooldown
+        coolWith(pool, proxy("p1"), timedOut()); // TIMEOUT base 60s x 2^(3-1) = 4m
+        Instant cooldownUntil = NOW.plus(Duration.ofMinutes(4));
+        Instant past = NOW.plus(Duration.ofMinutes(5)); // past the TIMEOUT cooldown
         clock.set(past);
 
         assertThat(pool.dueForRecoveryProbe(past)).containsExactly(new ProbeCandidate(proxy("p1"), CTX, cooldownUntil));
+    }
+
+    @Test
+    void dueForRecoveryProbeExcludesACellCooledByASiteBlockBecauseHalfOpenOwnsIt() {
+        // The whole point of the split (#90): a synthetic probe cannot judge a site block, so a
+        // BLOCKED-cooled cell is never offered as a probe candidate — isSelectable admits it instead.
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), blocked());
+        clock.set(NOW.plusSeconds(5 * 3600)); // well past the ~4h BLOCKED cooldown
+
+        assertThat(pool.dueForRecoveryProbe(clock.instant())).isEmpty();
     }
 
     @Test
@@ -269,11 +290,9 @@ class ResourcePoolTest {
         var clock = new SettableClock(NOW);
         var pool = poolAt(clock);
         pool.register(proxy("p1"));
-        for (int i = 0; i < 3; i++) {
-            pool.report(proxy("p1"), CTX, blocked());
-        }
+        coolWith(pool, proxy("p1"), timedOut());
         pool.block(proxy("p1"), Duration.ofDays(1)); // separate mechanism from the cell's own state
-        clock.set(NOW.plusSeconds(5 * 3600));
+        clock.set(NOW.plus(Duration.ofMinutes(5)));
 
         assertThat(pool.dueForRecoveryProbe(clock.instant())).isEmpty();
     }
@@ -281,20 +300,166 @@ class ResourcePoolTest {
     @Test
     void dueForRecoveryProbeExcludesAResourceCurrentlyLeasedUnderAnotherContext() {
         var clock = new SettableClock(NOW);
-        // A TTL that outlives the 5h jump below: this test is about the exclusion itself, not about
+        // A TTL that outlives the jump below: this test is about the exclusion itself, not about
         // lease expiry timing (covered separately elsewhere in this file).
         var engine = new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 3, 2);
         var pool = new ResourcePool(
                 engine, new WeightedRandomSelectionStrategy(), sink, metrics, clock, new Random(1), Duration.ofDays(1));
         var otherContext = new Context("baemin");
         pool.register(proxy("p1"));
-        for (int i = 0; i < 3; i++) {
-            pool.report(proxy("p1"), CTX, blocked()); // CTX's cell cools
-        }
+        coolWith(pool, proxy("p1"), timedOut()); // CTX's cell cools
         assertThat(pool.acquire(otherContext)).isPresent(); // leases are exclusive per resource id, not per cell
-        clock.set(NOW.plusSeconds(5 * 3600));
+        clock.set(NOW.plus(Duration.ofMinutes(5)));
 
         assertThat(pool.dueForRecoveryProbe(clock.instant())).isEmpty();
+    }
+
+    // --- half-open admission for a site block (#90) ---
+
+    @Test
+    void aCellCooledByASiteBlockIsSelectableOnceItsCooldownHasPassed() {
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), blocked());
+        assertThat(pool.acquire(CTX)).as("still inside the cooldown").isEmpty();
+
+        clock.set(NOW.plusSeconds(5 * 3600)); // past the ~4h BLOCKED cooldown
+        assertThat(pool.acquire(CTX))
+                .as("half-open: one real request is admitted to find out whether the block is over")
+                .isPresent();
+    }
+
+    @Test
+    void aCellCooledByATransportFailureStaysUnselectableEvenPastItsCooldown() {
+        // SLOW is the prober's business, not half-open's: a neutral target measures it faithfully, so
+        // spending real traffic on it would be admitting a resource nothing has vouched for.
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), new Outcome.Failure(FailureType.SLOW, Duration.ofMillis(1)));
+        clock.set(NOW.plus(Duration.ofMinutes(5))); // SLOW base 30s x 2^(3-1) = 2m, so well past it
+
+        assertThat(pool.acquire(CTX)).isEmpty();
+        assertThat(pool.dueForRecoveryProbe(clock.instant()))
+                .as("the prober owns this one instead")
+                .isNotEmpty();
+    }
+
+    @Test
+    void aBlocklistedCellCooledByASiteBlockIsNeverSelectable() {
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), blocked());
+        pool.block(proxy("p1"), Duration.ofDays(1)); // an operator's explicit isolation outranks half-open
+        clock.set(NOW.plusSeconds(5 * 3600));
+
+        assertThat(pool.acquire(CTX)).isEmpty();
+    }
+
+    @Test
+    void halfOpenAdmitsAtMostOneTrialRequestAtATime() {
+        // The concurrency limit a half-open circuit breaker enforces explicitly comes for free here:
+        // claim() already skips a resource with a live lease.
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), blocked());
+        clock.set(NOW.plusSeconds(5 * 3600));
+
+        assertThat(pool.acquire(CTX)).isPresent();
+        assertThat(pool.acquire(CTX)).as("the trial is already in flight").isEmpty();
+    }
+
+    @Test
+    void aBlockedProxyRecoversThroughOrdinaryTrafficWithNoProberConfigured() {
+        // The case #87's prober could not reach: no RecoveryProbe, no RecoveryScheduler, no synthetic
+        // request anywhere — the cell walks COOLING -> RECOVERING -> HEALTHY on real leases alone.
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), blocked());
+        clock.set(NOW.plusSeconds(5 * 3600));
+
+        var trial = pool.acquire(CTX).orElseThrow();
+        pool.report(proxy("p1"), CTX, success()); // COOLING -> RECOVERING (probation)
+        pool.release(trial);
+
+        var second = pool.acquire(CTX).orElseThrow();
+        pool.report(proxy("p1"), CTX, success()); // recoverAfter = 2 -> HEALTHY
+        pool.release(second);
+
+        assertThat(sink.events).hasAtLeastOneElementOfType(PoolEvent.ResourceRecovered.class);
+        assertThat(pool.dueForRecoveryProbe(clock.instant()))
+                .as("no prober was ever involved, and none was ever asked to be")
+                .isEmpty();
+    }
+
+    @Test
+    void aFailedHalfOpenTrialReCoolsWithTheNextStepOfTheBackoffCurve() {
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), blocked()); // 3 failures -> cooled until NOW + 4h
+        Instant admittedAt = NOW.plusSeconds(5 * 3600);
+        clock.set(admittedAt);
+
+        var trial = pool.acquire(CTX).orElseThrow();
+        pool.report(proxy("p1"), CTX, blocked()); // the site is still blocking us
+        pool.release(trial);
+
+        // 4th consecutive failure: BLOCKED base 3600s x 2^3 = 8h, and the guard has lapsed with the
+        // previous cooldown, so the engine really does re-cool rather than sit on the stale one.
+        assertThat(pool.acquire(CTX)).as("re-cooled, not admitted again").isEmpty();
+        clock.set(admittedAt.plus(Duration.ofHours(9)));
+        assertThat(pool.acquire(CTX))
+                .as("the escalated cooldown eventually elapses and half-open reopens")
+                .isPresent();
+    }
+
+    @Test
+    void aBlockReportedDuringATransportCooldownMovesTheCellToHalfOpenOnThatCooldown() {
+        // The split reads the cell's latest failure, and a failure arriving mid-cooldown is appended to
+        // the window even though the engine's "already being punished" guard leaves cooldownUntil
+        // alone. Pinned rather than left to chance: the trial fires early, on the shorter cooldown the
+        // transport failure sized, and a still-blocking site re-cools it on BLOCKED's own curve.
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), timedOut()); // TIMEOUT base 60s x 2^2 = 4m
+        clock.set(NOW.plus(Duration.ofMinutes(1)));
+        pool.report(proxy("p1"), CTX, blocked()); // an in-flight lease reports a block, mid-cooldown
+
+        clock.set(NOW.plus(Duration.ofMinutes(2)));
+        assertThat(pool.acquire(CTX))
+                .as("the cooldown is not restarted, so it still runs to 4m")
+                .isEmpty();
+
+        clock.set(NOW.plus(Duration.ofMinutes(5)));
+        assertThat(pool.dueForRecoveryProbe(clock.instant()))
+                .as("the prober no longer owns it")
+                .isEmpty();
+        assertThat(pool.acquire(CTX)).as("half-open does").isPresent();
+    }
+
+    @Test
+    void aTransportFailureReportedDuringABlockCooldownHandsTheCellBackToTheProber() {
+        // The same rule in the other direction, and the more expensive of the two: the cell returns to
+        // the prober's side, where a synthetic success can promote it while the site is still refusing
+        // us. Bounded — that costs one round of real traffic, which re-cools it.
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), blocked()); // BLOCKED base 3600s x 2^2 = 4h
+        clock.set(NOW.plus(Duration.ofHours(1)));
+        pool.report(proxy("p1"), CTX, timedOut());
+
+        clock.set(NOW.plus(Duration.ofHours(5)));
+        assertThat(pool.acquire(CTX)).as("half-open no longer owns it").isEmpty();
+        assertThat(pool.dueForRecoveryProbe(clock.instant()))
+                .as("the prober does, on the cooldown the block sized")
+                .containsExactly(new ProbeCandidate(proxy("p1"), CTX, NOW.plus(Duration.ofHours(4))));
     }
 
     @Test

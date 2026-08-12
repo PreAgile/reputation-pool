@@ -92,7 +92,11 @@ class RecoveryEndToEndTest {
     void aCoolingProxyRecoversAutomaticallyOnceTheEndpointHealsWithNoManualReportCall() throws Exception {
         wireMock = new WireMockServer(options().dynamicPort());
         wireMock.start();
-        wireMock.stubFor(get(urlEqualTo("/health")).willReturn(aResponse().withStatus(403)));
+        // 504, not 403: a gateway timeout classifies TIMEOUT, keeping this whole test on the prober's
+        // side of #90's split. A 403 would classify BLOCKED, and a probe that happened to fire before
+        // the endpoint heals below would flip the cell to half-open admission — where the backstop
+        // sweep, correctly, no longer offers it and this test would wait for a probe that never comes.
+        wireMock.stubFor(get(urlEqualTo("/health")).willReturn(aResponse().withStatus(504)));
 
         var endpoint = new ProxyEndpoint("demo", ProxyType.RESIDENTIAL, "localhost", wireMock.port(), null);
         ResourceId resourceId = endpoint.toResourceId();
@@ -102,7 +106,7 @@ class RecoveryEndToEndTest {
         var clock = new SettableClock(START);
         List<PoolEvent> recorded = new CopyOnWriteArrayList<>();
         // A tiny fixed cooldown keeps this test fast; a real deployment would use AdaptiveCooldownPolicy.
-        // coolAfter = 1, recoverAfter = 1: one BLOCKED failure cools it, one healthy probe fully recovers it.
+        // coolAfter = 1, recoverAfter = 1: one TIMEOUT failure cools it, one healthy probe fully recovers it.
         CooldownPolicy tiny = (type, consecutiveFailures) -> TINY_COOLDOWN;
         var engine = new ReputationEngine(tiny, 10, 1, 1);
 
@@ -123,8 +127,8 @@ class RecoveryEndToEndTest {
                 pool, Map.of(ResourceKind.PROXY, httpProbe), clock, new Random(1), Duration.ZERO)) {
             schedulerHolder[0] = scheduler;
 
-            // Real traffic hits the blocked endpoint and reports it — the only report() call in this test.
-            pool.report(resourceId, CTX, new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(1)));
+            // Real traffic hits the unhealthy endpoint and reports it — the only report() call in this test.
+            pool.report(resourceId, CTX, new Outcome.Failure(FailureType.TIMEOUT, Duration.ofMillis(1)));
             assertThat(pool.acquire(CTX))
                     .as("cooling resource is not selectable")
                     .isEmpty();
