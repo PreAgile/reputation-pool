@@ -111,24 +111,29 @@ public final class HttpProxyRecoveryProbe implements RecoveryProbe {
             return Optional.empty();
         }
 
-        HttpClient client = HttpClient.newBuilder()
-                .proxy(ProxySelector.of(new InetSocketAddress(
-                        endpoint.get().host(), endpoint.get().port())))
-                .connectTimeout(timeout)
-                .build();
         HttpRequest request =
                 HttpRequest.newBuilder(target).timeout(timeout).GET().build();
 
-        long startedAtNanos = System.nanoTime();
-        try {
-            HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
-            Duration latency = Duration.ofNanos(System.nanoTime() - startedAtNanos);
-            return Optional.of(classifier.classifyResponse(response.statusCode(), latency));
-        } catch (IOException e) {
-            return Optional.of(classifier.classifyError(e, Duration.ofNanos(System.nanoTime() - startedAtNanos)));
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            return Optional.of(classifier.classifyError(e, Duration.ofNanos(System.nanoTime() - startedAtNanos)));
+        // The client is per-probe because its proxy selector is: each candidate dials a different
+        // host:port, so it cannot be shared or cached. An HttpClient owns a selector thread and an
+        // executor, and only closing it releases them — left to the GC they accumulate one leaked
+        // thread per probe. send() is synchronous, so nothing is in flight when close() runs.
+        try (HttpClient client = HttpClient.newBuilder()
+                .proxy(ProxySelector.of(new InetSocketAddress(
+                        endpoint.get().host(), endpoint.get().port())))
+                .connectTimeout(timeout)
+                .build()) {
+            long startedAtNanos = System.nanoTime();
+            try {
+                HttpResponse<Void> response = client.send(request, HttpResponse.BodyHandlers.discarding());
+                Duration latency = Duration.ofNanos(System.nanoTime() - startedAtNanos);
+                return Optional.of(classifier.classifyResponse(response.statusCode(), latency));
+            } catch (IOException e) {
+                return Optional.of(classifier.classifyError(e, Duration.ofNanos(System.nanoTime() - startedAtNanos)));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return Optional.of(classifier.classifyError(e, Duration.ofNanos(System.nanoTime() - startedAtNanos)));
+            }
         }
     }
 }

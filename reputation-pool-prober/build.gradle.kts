@@ -45,12 +45,10 @@ dependencies {
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("org.assertj:assertj-core:3.27.7")
-    // Property tests for the scheduler's dedupe/dispatch invariants (same version as the other modules).
-    testImplementation("net.jqwik:jqwik:1.10.1")
     // Shared test helpers from core (SettableClock) instead of a per-module copy.
     testImplementation(testFixtures(project(":reputation-pool-core")))
 
-    // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik), same version as core.
+    // Teaches PIT to drive the JUnit Platform (Jupiter), same version as core.
     pitest("org.pitest:pitest-junit5-plugin:1.2.3")
 }
 
