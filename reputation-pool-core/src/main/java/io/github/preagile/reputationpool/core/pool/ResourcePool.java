@@ -385,11 +385,12 @@ public final class ResourcePool {
      * probing a resource real traffic is using right now, or one an operator has explicitly isolated,
      * would defeat both.
      *
-     * <p>A cell cooled by a {@link FailureType#BLOCKED} is excluded too, and for a different reason:
-     * {@link #isSelectable} admits it as a half-open trial instead. The split is deliberate and total —
-     * a synthetic probe owns the four transport failures it can actually measure, half-open owns the
-     * one failure that lives in the site rather than the resource. No cell is ever both, so the two
-     * mechanisms never race to move the same cell out of {@code COOLING}.
+     * <p>A cell whose latest failure is a {@link FailureType#BLOCKED} is excluded too, and for a
+     * different reason: {@link #isSelectable} admits it as a half-open trial instead. The split is
+     * deliberate and total — a synthetic probe owns the four transport failures it can actually
+     * measure, half-open owns the one failure that lives in the site rather than the resource. Both
+     * sides read the same {@link #lastFailureWasSiteBlock} predicate off the same cell, so no cell is
+     * ever both and the two mechanisms never race to move the same cell out of {@code COOLING}.
      *
      * @param now the instant to evaluate cooldown expiry against
      * @return the due candidates, in no particular order; empty if none are due
@@ -403,7 +404,7 @@ public final class ResourcePool {
             if (cell.state() != ResourceState.COOLING || now.isBefore(cell.cooldownUntil())) {
                 continue;
             }
-            if (cooledBySiteBlock(cell)) {
+            if (lastFailureWasSiteBlock(cell)) {
                 continue; // half-open admission owns this one; see isSelectable
             }
             if (currentBlocklist.isBlocked(cell.resourceId(), now) || leases.isLeased(cell.resourceId(), now)) {
@@ -416,7 +417,7 @@ public final class ResourcePool {
 
     /**
      * The selection gate: {@code HEALTHY} and {@code RECOVERING} always, plus the half-open case —
-     * a {@code COOLING} cell whose cooldown has elapsed and whose cooling cause was
+     * a {@code COOLING} cell whose cooldown has elapsed and whose latest failure was a
      * {@link FailureType#BLOCKED}, which earns one trial request.
      *
      * <p>A block lives in the relationship between this resource and one specific site, not in the
@@ -435,22 +436,35 @@ public final class ResourcePool {
         if (state == ResourceState.HEALTHY || state == ResourceState.RECOVERING) {
             return true;
         }
-        return state == ResourceState.COOLING && !now.isBefore(cell.cooldownUntil()) && cooledBySiteBlock(cell);
+        return state == ResourceState.COOLING && !now.isBefore(cell.cooldownUntil()) && lastFailureWasSiteBlock(cell);
     }
 
     /**
-     * Whether the failure that cooled this cell was a {@link FailureType#BLOCKED}, read back from the
-     * outcome window the cell already carries rather than from a new field — nothing to migrate,
-     * nothing to keep in sync with the engine.
+     * Whether the most recent failure this cell has seen is a {@link FailureType#BLOCKED}, read back
+     * from the outcome window the cell already carries rather than from a new field — nothing to
+     * migrate, nothing to keep in sync with the engine. Successes are skipped over, which is what the
+     * backwards scan is for.
      *
-     * <p>The most recent {@code Failure} in the window is the incident that set
-     * {@code cooldownUntil}: the engine only ever cools on a failure. Later successes recorded while
-     * still cooling are skipped over, which is what the backwards scan is for. A window holding no
-     * failure at all — a freshly registered cell, or one restored with a window that has since rolled
-     * over — reads as "not a block", the conservative answer: it leaves the cell on the prober's side
-     * of the split instead of admitting real traffic on a guess.
+     * <p><b>The latest failure, not strictly the one that set {@code cooldownUntil}.</b> Usually they
+     * are the same, but a failure arriving while the cell is already cooling is still appended to the
+     * window even though {@code ReputationEngine}'s "already being punished for this incident" guard
+     * keeps it from restarting the cooldown — so a late report can change the answer mid-cooldown, in
+     * either direction. Outcomes carry no timestamp, so the window cannot distinguish the two; telling
+     * them apart would need a cause field on the cell, and the freshest failure is the better signal
+     * anyway. Both directions are self-correcting within one trial: a block observed during a
+     * transport cooldown gets its half-open trial early (on the shorter cooldown the transport failure
+     * sized), and if the site is still refusing us that trial fails {@code BLOCKED} past the cooldown,
+     * so the engine re-cools it on the block's own much longer curve; a transport failure observed
+     * during a block's cooldown hands the cell to the prober, whose synthetic success at worst buys
+     * one round of real traffic that re-cools it. What does not vary is the partition: both callers
+     * ask this same question of the same cell, so no cell is ever claimed by both mechanisms.
+     *
+     * <p>A window holding no failure at all — a freshly registered cell, or a cooled one whose
+     * causing failure has since been pushed out by later outcomes — reads as "not a block", the
+     * conservative answer: it leaves the cell on the prober's side of the split instead of admitting
+     * real traffic on a guess.
      */
-    private static boolean cooledBySiteBlock(ReputationCell cell) {
+    private static boolean lastFailureWasSiteBlock(ReputationCell cell) {
         List<Outcome> window = cell.window();
         for (int i = window.size() - 1; i >= 0; i--) {
             if (window.get(i) instanceof Outcome.Failure failure) {

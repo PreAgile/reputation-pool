@@ -45,6 +45,10 @@ import net.jqwik.api.constraints.LongRange;
  * assertion is the exclusion itself, and the two that follow pin down which mechanism owns which case
  * so the exclusion cannot be satisfied by neither ever firing.
  *
+ * <p>The second property attacks the same partition with a moving target: a failure of a different
+ * type reported while the cell is already cooling changes which half owns it, without changing the
+ * cooldown the first failure sized. The half may flip; both halves claiming it at once may not.
+ *
  * <p>{@code isSelectable} is private, so it is observed the only way a caller can: through
  * {@link ResourcePool#acquire}. With a single registered resource that is faithful —
  * {@link WeightedRandomSelectionStrategy} always returns the sole candidate. Order matters: the probe
@@ -106,6 +110,48 @@ class ResourcePoolHalfOpenPropertyTest {
             assertThat(probeCandidate)
                     .as("past its cooldown, exactly the transport causes are left to the prober")
                     .isEqualTo(cause != FailureType.BLOCKED);
+        }
+    }
+
+    @Property
+    @Label("the partition survives a failure of a different type landing while the cell is already cooling")
+    void aLateFailureMovesTheCellBetweenTheTwoHalvesButNeverIntoBoth(
+            @ForAll FailureType cause,
+            @ForAll FailureType lateCause,
+            @ForAll @LongRange(min = 2, max = 3600 * 200) long offsetSeconds) {
+        var clock = new SettableClock(T0);
+        var pool = freshPool(clock);
+        pool.register(RESOURCE);
+        for (int i = 0; i < COOL_AFTER; i++) {
+            pool.report(RESOURCE, CTX, new Outcome.Failure(cause, Duration.ofMillis(1)));
+        }
+        // One second in, still well inside even the shortest cooldown (SLOW: 30s x 2^2 = 2m), an
+        // in-flight lease reports a second failure. The engine's "already being punished for this
+        // incident" guard leaves cooldownUntil alone, but the window records it — so which half of the
+        // split owns this cell is decided by lateCause from here on.
+        clock.set(T0.plusSeconds(1));
+        pool.report(RESOURCE, CTX, new Outcome.Failure(lateCause, Duration.ofMillis(1)));
+
+        Instant now = T0.plusSeconds(offsetSeconds);
+        clock.set(now);
+        boolean probeCandidate = !pool.dueForRecoveryProbe(now).isEmpty();
+        boolean selectable = pool.acquire(CTX).isPresent();
+
+        assertThat(probeCandidate && selectable)
+                .as("cause=%s lateCause=%s now=%s was claimed by both mechanisms at once", cause, lateCause, now)
+                .isFalse();
+
+        Instant cooldownUntil = T0.plus(new AdaptiveCooldownPolicy().cooldownFor(cause, COOL_AFTER));
+        if (now.isBefore(cooldownUntil)) {
+            assertThat(selectable).as("still cooling, whatever the cause").isFalse();
+            assertThat(probeCandidate).as("still cooling, whatever the cause").isFalse();
+        } else {
+            assertThat(selectable)
+                    .as("past the cooldown the first failure sized, the latest failure decides the half")
+                    .isEqualTo(lateCause == FailureType.BLOCKED);
+            assertThat(probeCandidate)
+                    .as("past the cooldown the first failure sized, the latest failure decides the half")
+                    .isEqualTo(lateCause != FailureType.BLOCKED);
         }
     }
 }

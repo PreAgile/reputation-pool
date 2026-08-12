@@ -419,6 +419,50 @@ class ResourcePoolTest {
     }
 
     @Test
+    void aBlockReportedDuringATransportCooldownMovesTheCellToHalfOpenOnThatCooldown() {
+        // The split reads the cell's latest failure, and a failure arriving mid-cooldown is appended to
+        // the window even though the engine's "already being punished" guard leaves cooldownUntil
+        // alone. Pinned rather than left to chance: the trial fires early, on the shorter cooldown the
+        // transport failure sized, and a still-blocking site re-cools it on BLOCKED's own curve.
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), timedOut()); // TIMEOUT base 60s x 2^2 = 4m
+        clock.set(NOW.plus(Duration.ofMinutes(1)));
+        pool.report(proxy("p1"), CTX, blocked()); // an in-flight lease reports a block, mid-cooldown
+
+        clock.set(NOW.plus(Duration.ofMinutes(2)));
+        assertThat(pool.acquire(CTX))
+                .as("the cooldown is not restarted, so it still runs to 4m")
+                .isEmpty();
+
+        clock.set(NOW.plus(Duration.ofMinutes(5)));
+        assertThat(pool.dueForRecoveryProbe(clock.instant()))
+                .as("the prober no longer owns it")
+                .isEmpty();
+        assertThat(pool.acquire(CTX)).as("half-open does").isPresent();
+    }
+
+    @Test
+    void aTransportFailureReportedDuringABlockCooldownHandsTheCellBackToTheProber() {
+        // The same rule in the other direction, and the more expensive of the two: the cell returns to
+        // the prober's side, where a synthetic success can promote it while the site is still refusing
+        // us. Bounded — that costs one round of real traffic, which re-cools it.
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), blocked()); // BLOCKED base 3600s x 2^2 = 4h
+        clock.set(NOW.plus(Duration.ofHours(1)));
+        pool.report(proxy("p1"), CTX, timedOut());
+
+        clock.set(NOW.plus(Duration.ofHours(5)));
+        assertThat(pool.acquire(CTX)).as("half-open no longer owns it").isEmpty();
+        assertThat(pool.dueForRecoveryProbe(clock.instant()))
+                .as("the prober does, on the cooldown the block sized")
+                .containsExactly(new ProbeCandidate(proxy("p1"), CTX, NOW.plus(Duration.ofHours(4))));
+    }
+
+    @Test
     void dueForRecoveryProbeRejectsNullNow() {
         assertThatThrownBy(() -> poolAt(fixed()).dueForRecoveryProbe(null)).isInstanceOf(NullPointerException.class);
     }
