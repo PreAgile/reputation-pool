@@ -55,6 +55,8 @@ class ResourcePoolDueForRecoveryProbePropertyTest {
     private static final Duration TTL = Duration.ofDays(365);
     private static final ResourceId RESOURCE = new ResourceId(ResourceKind.PROXY, "p1");
     private static final int COOL_AFTER = 3;
+    /** Bounded by a probe's own budget, the way a prober is expected to size it. */
+    private static final Duration PROBE_TTL = Duration.ofSeconds(15);
 
     private static ResourcePool freshPool(SettableClock clock) {
         var engine = new ReputationEngine(new AdaptiveCooldownPolicy(), 10, 3, 2);
@@ -71,21 +73,66 @@ class ResourcePoolDueForRecoveryProbePropertyTest {
             @ForAll boolean blocklisted,
             @ForAll boolean leasedUnderAnotherContext) {
         var clock = new SettableClock(T0);
+        var pool = arrange(clock, cause, consecutiveFailures, blocklisted, leasedUnderAnotherContext);
+
+        Instant now = T0.plusSeconds(offsetSeconds);
+        clock.set(now);
+        var due = pool.dueForRecoveryProbe(now);
+
+        if (expectedDue(cause, consecutiveFailures, now, blocklisted, leasedUnderAnotherContext)) {
+            assertThat(due).containsExactly(new ProbeCandidate(RESOURCE, CTX, cooldownUntil(cause)));
+        } else {
+            assertThat(due).isEmpty();
+        }
+    }
+
+    /**
+     * The acquiring sibling, over the same space (#102). {@code dueForRecoveryProbe} names candidates
+     * and the prober claims one at dispatch, seconds later; the two answering the same question is what
+     * makes the second call a re-check of the first rather than a second, looser rule of its own. And
+     * once the claim is granted the cell is nobody else's: not the query's to name again, not traffic's
+     * to lease — which is the ownership the {@code isLeased} guard alone never provided.
+     */
+    @Property
+    @Label("the claim taken at dispatch grants exactly when the query would name the cell, and holding it "
+            + "excludes both the query and real traffic")
+    void tryAcquireForProbeGrantsExactlyWhatTheQueryNames(
+            @ForAll FailureType cause,
+            @ForAll @IntRange(min = 1, max = 8) int consecutiveFailures,
+            @ForAll @LongRange(min = -3600, max = 3600 * 130) long offsetSeconds,
+            @ForAll boolean blocklisted,
+            @ForAll boolean leasedUnderAnotherContext) {
+        var clock = new SettableClock(T0);
+        var pool = arrange(clock, cause, consecutiveFailures, blocklisted, leasedUnderAnotherContext);
+
+        Instant now = T0.plusSeconds(offsetSeconds);
+        clock.set(now);
+        var claim = pool.tryAcquireForProbe(RESOURCE, CTX, now, PROBE_TTL);
+
+        assertThat(claim.isPresent())
+                .isEqualTo(expectedDue(cause, consecutiveFailures, now, blocklisted, leasedUnderAnotherContext));
+        if (claim.isPresent()) {
+            assertThat(claim.get().expiresAt()).isEqualTo(now.plus(PROBE_TTL));
+            assertThat(pool.dueForRecoveryProbe(now))
+                    .as("a cell being probed is not a candidate for a second probe")
+                    .isEmpty();
+            assertThat(pool.acquire(OTHER_CONTEXT))
+                    .as("nor is it available to real traffic while the probe runs")
+                    .isEmpty();
+        }
+    }
+
+    private static ResourcePool arrange(
+            SettableClock clock,
+            FailureType cause,
+            int consecutiveFailures,
+            boolean blocklisted,
+            boolean leasedUnderAnotherContext) {
         var pool = freshPool(clock);
         pool.register(RESOURCE);
-
         for (int i = 0; i < consecutiveFailures; i++) {
             pool.report(RESOURCE, CTX, new Outcome.Failure(cause, Duration.ofMillis(1)));
         }
-        // All reports land at the same instant (the clock has not moved yet), so shouldCool's "already
-        // cooling, do not re-extend" guard means only the failure that first crosses coolAfter ever sets
-        // the cooldown — any further failures at that same instant just keep incrementing the streak
-        // without recomputing it. The engine's own contract (ReputationEngine's class javadoc) is what
-        // this oracle mirrors, not a detail of this test.
-        boolean everCooled = consecutiveFailures >= COOL_AFTER;
-        Duration cooldown = new AdaptiveCooldownPolicy().cooldownFor(cause, COOL_AFTER);
-        Instant cooldownUntil = T0.plus(cooldown);
-
         // Order matters: acquire() refuses an already-blocklisted resource, but block() does not
         // revoke an existing lease — so the lease must be taken first for both flags to be true at once.
         if (leasedUnderAnotherContext) {
@@ -94,19 +141,25 @@ class ResourcePoolDueForRecoveryProbePropertyTest {
         if (blocklisted) {
             pool.block(RESOURCE, Duration.ofDays(365));
         }
+        return pool;
+    }
 
-        Instant now = T0.plusSeconds(offsetSeconds);
-        clock.set(now);
-        var due = pool.dueForRecoveryProbe(now);
+    private static Instant cooldownUntil(FailureType cause) {
+        return T0.plus(new AdaptiveCooldownPolicy().cooldownFor(cause, COOL_AFTER));
+    }
 
-        boolean cooldownElapsed = everCooled && !now.isBefore(cooldownUntil);
-        boolean expectedDue =
-                cooldownElapsed && cause != FailureType.BLOCKED && !blocklisted && !leasedUnderAnotherContext;
-
-        if (expectedDue) {
-            assertThat(due).containsExactly(new ProbeCandidate(RESOURCE, CTX, cooldownUntil));
-        } else {
-            assertThat(due).isEmpty();
-        }
+    private static boolean expectedDue(
+            FailureType cause,
+            int consecutiveFailures,
+            Instant now,
+            boolean blocklisted,
+            boolean leasedUnderAnotherContext) {
+        // All reports land at the same instant (the clock has not moved yet), so shouldCool's "already
+        // cooling, do not re-extend" guard means only the failure that first crosses coolAfter ever sets
+        // the cooldown — any further failures at that same instant just keep incrementing the streak
+        // without recomputing it. The engine's own contract (ReputationEngine's class javadoc) is what
+        // this oracle mirrors, not a detail of this test.
+        boolean cooldownElapsed = consecutiveFailures >= COOL_AFTER && !now.isBefore(cooldownUntil(cause));
+        return cooldownElapsed && cause != FailureType.BLOCKED && !blocklisted && !leasedUnderAnotherContext;
     }
 }

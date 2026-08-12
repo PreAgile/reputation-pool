@@ -314,6 +314,125 @@ class ResourcePoolTest {
         assertThat(pool.dueForRecoveryProbe(clock.instant())).isEmpty();
     }
 
+    // --- a probe owns its resource while it runs (#102) ---
+
+    /**
+     * The cell being probed belongs to {@link #CTX} and is {@code COOLING}, so {@code CTX} itself has
+     * no traffic to disturb. Leases are per resource id, not per cell, so the traffic that can collide
+     * with a probe is another context's — which is exactly the overlap #102 is about.
+     */
+    private static final Context OTHER_CTX = new Context("baemin");
+
+    private static final Duration PROBE_TTL = Duration.ofSeconds(15);
+
+    /** Cools {@code p1} for {@link #CTX} with a transport failure and moves past its cooldown. */
+    private ResourcePool poolWithACellDueForAProbe(SettableClock clock) {
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), timedOut()); // TIMEOUT base 60s x 2^(3-1) = 4m
+        clock.set(NOW.plus(Duration.ofMinutes(5)));
+        return pool;
+    }
+
+    @Test
+    void aProbeClaimHoldsTheResourceSoRealTrafficCannotLeaseItMidProbe() {
+        var clock = new SettableClock(NOW);
+        var pool = poolWithACellDueForAProbe(clock);
+
+        var claim = pool.tryAcquireForProbe(proxy("p1"), CTX, clock.instant(), PROBE_TTL);
+        assertThat(claim).isPresent();
+        assertThat(claim.get().expiresAt()).isEqualTo(clock.instant().plus(PROBE_TTL));
+        assertThat(sink.events).hasAtLeastOneElementOfType(PoolEvent.ResourceLeased.class);
+
+        assertThat(pool.acquire(OTHER_CTX))
+                .as("real traffic must not get the resource while a probe is using it")
+                .isEmpty();
+
+        assertThat(pool.release(claim.get())).isTrue();
+        assertThat(pool.acquire(OTHER_CTX))
+                .as("and must get it back the moment the probe is done")
+                .isPresent();
+    }
+
+    @Test
+    void aProbeClaimIsRefusedWhenRealTrafficAlreadyHoldsTheResource() {
+        var clock = new SettableClock(NOW);
+        var pool = poolWithACellDueForAProbe(clock);
+        assertThat(pool.acquire(OTHER_CTX)).isPresent(); // traffic got there first
+
+        assertThat(pool.tryAcquireForProbe(proxy("p1"), CTX, clock.instant(), PROBE_TTL))
+                .isEmpty();
+    }
+
+    @Test
+    void aProbeClaimIsRefusedForACellThatHasMovedOnSinceItWasNamed() {
+        // The gap #102 describes runs both ways: while the probe waited out its jitter, an earlier
+        // probe's success may already have promoted this cell out of COOLING. Probing it now would
+        // take a resource away from the traffic that is entitled to it again.
+        var clock = new SettableClock(NOW);
+        var pool = poolWithACellDueForAProbe(clock);
+        pool.report(proxy("p1"), CTX, success()); // -> RECOVERING
+
+        assertThat(pool.tryAcquireForProbe(proxy("p1"), CTX, clock.instant(), PROBE_TTL))
+                .isEmpty();
+    }
+
+    @Test
+    void aProbeClaimIsRefusedWhileTheCooldownIsStillRunning() {
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), timedOut()); // TIMEOUT's cooldown is minutes; NOW is inside it
+
+        assertThat(pool.tryAcquireForProbe(proxy("p1"), CTX, clock.instant(), PROBE_TTL))
+                .isEmpty();
+    }
+
+    @Test
+    void aProbeClaimIsRefusedForACellCooledByASiteBlock() {
+        // Same partition the query applies (#90/#98): half-open owns this cell, so the claim must not
+        // hand it to a prober through the dispatch path either.
+        var clock = new SettableClock(NOW);
+        var pool = poolAt(clock);
+        pool.register(proxy("p1"));
+        coolWith(pool, proxy("p1"), blocked());
+        clock.set(NOW.plusSeconds(5 * 3600)); // well past the ~4h BLOCKED cooldown
+
+        assertThat(pool.tryAcquireForProbe(proxy("p1"), CTX, clock.instant(), PROBE_TTL))
+                .isEmpty();
+    }
+
+    @Test
+    void aProbeClaimIsRefusedForABlocklistedResource() {
+        var clock = new SettableClock(NOW);
+        var pool = poolWithACellDueForAProbe(clock);
+        pool.block(proxy("p1"), Duration.ofDays(1));
+
+        assertThat(pool.tryAcquireForProbe(proxy("p1"), CTX, clock.instant(), PROBE_TTL))
+                .isEmpty();
+    }
+
+    @Test
+    void aProbeClaimIsRefusedForACellThatWasNeverReportedOn() {
+        var pool = poolAt(fixed());
+        pool.register(proxy("p1"));
+
+        assertThat(pool.tryAcquireForProbe(proxy("p1"), CTX, NOW, PROBE_TTL)).isEmpty();
+    }
+
+    @Test
+    void aProbeClaimExpiresOnItsOwnTtlSoAProberThatDiesDoesNotHoldTheResource() {
+        var clock = new SettableClock(NOW);
+        var pool = poolWithACellDueForAProbe(clock);
+        assertThat(pool.tryAcquireForProbe(proxy("p1"), CTX, clock.instant(), PROBE_TTL))
+                .isPresent(); // deliberately never released, as a dead prober would leave it
+
+        clock.set(clock.instant().plus(PROBE_TTL));
+        assertThat(pool.acquire(OTHER_CTX))
+                .as("the TTL is the safety net for a prober that never came back")
+                .isPresent();
+    }
+
     // --- half-open admission for a site block (#90) ---
 
     @Test
@@ -584,6 +703,15 @@ class ResourcePoolTest {
         assertThatThrownBy(() -> pool.block(proxy("p1"), Duration.ZERO)).isInstanceOf(IllegalArgumentException.class);
         assertThatThrownBy(() -> pool.renew(null)).isInstanceOf(NullPointerException.class);
         assertThatThrownBy(() -> pool.release(null)).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> pool.tryAcquireForProbe(null, CTX, NOW, TTL)).isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> pool.tryAcquireForProbe(proxy("p1"), null, NOW, TTL))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> pool.tryAcquireForProbe(proxy("p1"), CTX, null, TTL))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> pool.tryAcquireForProbe(proxy("p1"), CTX, NOW, null))
+                .isInstanceOf(NullPointerException.class);
+        assertThatThrownBy(() -> pool.tryAcquireForProbe(proxy("p1"), CTX, NOW, Duration.ZERO))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 
     // --- concurrency: pool-level lease exclusivity and the report path (#27) ---

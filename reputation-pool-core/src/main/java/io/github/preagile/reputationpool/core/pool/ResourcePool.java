@@ -44,8 +44,9 @@ import java.util.random.RandomGenerator;
 /**
  * The pool's single entry point and aggregate root: it composes the blocklist, selection strategy,
  * lease registry, and reputation engine into the four operations a caller sees — {@link #acquire},
- * {@link #report}, {@link #renew}, {@link #release} — plus resource registration and manual
- * blocklisting.
+ * {@link #report}, {@link #renew}, {@link #release} — plus resource registration, manual
+ * blocklisting, and the recovery prober's own pair ({@link #dueForRecoveryProbe},
+ * {@link #tryAcquireForProbe}).
  *
  * <p>Everything beneath it was built pure or self-contained so it could be tested in isolation; this
  * facade is where they connect and where side effects enter. It is the one place that reads the
@@ -201,9 +202,10 @@ public final class ResourcePool {
      *   <li><b>An ownership reservation here would not close the window that does exist.</b>
      *       {@link #dueForRecoveryProbe} is a query, and its caller dispatches the probe later (the
      *       prober jitters by seconds and runs it on another thread). The gap that matters is between
-     *       that decision and the probe actually running, not between this check and this claim —
-     *       closing it properly means the prober holding a real lease for the probe's lifetime, a
-     *       design change, not a lock here.
+     *       that decision and the probe actually running, not between this check and this claim, so it
+     *       is closed where it opens: the prober calls {@link #tryAcquireForProbe} at dispatch time and
+     *       holds a real lease for the probe's lifetime (#102), which this method then excludes like
+     *       any other.
      *   <li><b>What a stale read costs is bounded and small.</b> One extra real request on a resource
      *       that has just re-cooled, whose outcome flows back through the same {@code cells.compute}
      *       as any other. Once the lease exists it excludes the resource from
@@ -411,11 +413,13 @@ public final class ResourcePool {
      * traffic left to report a success and let it probate into {@code RECOVERING}: without an outer
      * component calling {@link #report} for it directly, it would stay {@code COOLING} forever.
      *
-     * <p>This is a read-only query, not a decision: it names candidates, it does not act on them. A
-     * candidate already blocklisted or currently leased (by another context — see {@link LeaseRegistry})
-     * is excluded, mirroring the two guards {@link #claim} applies before checking selectability —
-     * probing a resource real traffic is using right now, or one an operator has explicitly isolated,
-     * would defeat both.
+     * <p>This is a read-only query, not a decision: it names candidates, it does not act on them, and
+     * it takes nothing — the caller claims the resource at dispatch time with
+     * {@link #tryAcquireForProbe}, which re-applies this same predicate to the one cell it is about to
+     * probe. A candidate already blocklisted or currently leased (by another context — see
+     * {@link LeaseRegistry}) is excluded, mirroring the two guards {@link #claim} applies before
+     * checking selectability — probing a resource real traffic is using right now, or one an operator
+     * has explicitly isolated, would defeat both.
      *
      * <p>A cell cooled by a {@link FailureType#BLOCKED} is excluded too, and for a different reason:
      * {@link #isSelectable} admits it as a half-open trial instead. The split is deliberate and total —
@@ -433,11 +437,8 @@ public final class ResourcePool {
         Blocklist currentBlocklist = blocklist.get();
         var due = new ArrayList<ProbeCandidate>();
         for (ReputationCell cell : cells.values()) {
-            if (cell.state() != ResourceState.COOLING || now.isBefore(cell.cooldownUntil())) {
+            if (!isDueForProbe(cell, now)) {
                 continue;
-            }
-            if (cell.cooldownCause() == FailureType.BLOCKED) {
-                continue; // half-open admission owns this one; see isSelectable
             }
             if (currentBlocklist.isBlocked(cell.resourceId(), now) || leases.isLeased(cell.resourceId(), now)) {
                 continue;
@@ -445,6 +446,82 @@ public final class ResourcePool {
             due.add(new ProbeCandidate(cell.resourceId(), cell.context(), cell.cooldownUntil()));
         }
         return List.copyOf(due);
+    }
+
+    /**
+     * Claims exclusive ownership of {@code resource} for the duration of one recovery probe: the
+     * acquiring sibling of {@link #dueForRecoveryProbe}, applying that query's predicate to a single
+     * cell and, if it still holds, taking a real {@link Lease} the caller releases with
+     * {@link #release} when the probe is done.
+     *
+     * <p><b>Why the prober needs this at all.</b> {@link #dueForRecoveryProbe} is a point-in-time read
+     * and its caller dispatches the probe later — the prober jitters by seconds and runs the probe on
+     * another thread. In that gap the resource is owned by nobody, so real traffic can take a lease on
+     * it while a probe is in flight. Harmless for a {@code robots.txt} GET; not harmless for a probe
+     * that costs something (an account login overlapping real traffic can get the account locked). A
+     * probe that owns its resource for exactly as long as it runs is what the {@code isLeased} guard
+     * has always looked like it provided (#102).
+     *
+     * <p><b>Why the predicate is re-applied here and not just the lease.</b> The same gap that lets
+     * traffic in also lets the cell move: an earlier probe may have already recovered it, a fresh
+     * failure may have re-cooled it well into the future, or the cooldown may have been taken over by a
+     * {@link FailureType#BLOCKED} cause, which half-open admission — not a synthetic probe — owns. Each
+     * of those makes the scheduled probe stale, so the answer is "not now" rather than a probe against
+     * a cell that has moved on. Losing the claim (or the predicate) is normal operation, not an error:
+     * real traffic getting there first is the better recovery signal anyway, and the caller's backstop
+     * sweep re-offers the cell on its next pass if it is still stuck.
+     *
+     * <p>The lease is a real one — {@link PoolEvent.ResourceLeased} is emitted and {@link #acquire}
+     * excludes the resource while it is held — because the hold is real: for its duration the resource
+     * genuinely cannot be lent. Give it a {@code ttl} bounded by the probe's own budget rather than the
+     * pool's lease TTL, so a prober that dies mid-probe releases the resource in the time the probe
+     * would have taken instead of holding it for a full lease.
+     *
+     * @param resource the resource to probe
+     * @param context the context the cell being probed belongs to
+     * @param now the instant to evaluate the cooldown, the blocklist, and the lease against
+     * @param ttl how long the probe lease stays valid if the prober never releases it
+     * @return the granted lease, or {@link Optional#empty()} if the cell is no longer due for a probe,
+     *     the resource is blocklisted, or it is already leased
+     * @throws NullPointerException if any reference argument is null
+     * @throws IllegalArgumentException if {@code ttl} is zero or negative
+     */
+    public Optional<Lease> tryAcquireForProbe(ResourceId resource, Context context, Instant now, Duration ttl) {
+        Objects.requireNonNull(resource, "resource must not be null");
+        Objects.requireNonNull(context, "context must not be null");
+        Objects.requireNonNull(now, "now must not be null");
+        requirePositive(ttl);
+        if (blocklist.get().isBlocked(resource, now)
+                || !isDueForProbe(cells.get(new CellKey(resource, context)), now)) {
+            return Optional.empty();
+        }
+        Optional<Lease> lease = leases.tryAcquire(resource, context, now, ttl);
+        if (lease.isEmpty()) {
+            return Optional.empty(); // real traffic, or another prober, got there first
+        }
+        if (blocklist.get().isBlocked(resource, now)) {
+            // blocklisted between the check above and the claim: undo it, for the reason claim() undoes
+            // its own — an operator's explicit isolation is the one gate a stale read must not bypass
+            leases.release(resource, lease.get().token());
+            return Optional.empty();
+        }
+        events.emit(
+                new PoolEvent.ResourceLeased(resource, context, now, lease.get().expiresAt()));
+        return lease;
+    }
+
+    /**
+     * The probe half of the recovery split, evaluated on one cell: {@code COOLING} past its own
+     * cooldown, and not cooled by a site block ({@link #isSelectable} admits that one as a half-open
+     * trial instead). Shared by {@link #dueForRecoveryProbe} and {@link #tryAcquireForProbe} so the
+     * query and the claim can never drift apart. A {@code null} cell — never reported on — is not
+     * cooling, so it is not due.
+     */
+    private static boolean isDueForProbe(ReputationCell cell, Instant now) {
+        return cell != null
+                && cell.state() == ResourceState.COOLING
+                && !now.isBefore(cell.cooldownUntil())
+                && cell.cooldownCause() != FailureType.BLOCKED;
     }
 
     /**
