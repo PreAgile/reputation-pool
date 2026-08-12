@@ -34,6 +34,17 @@ import java.util.Objects;
  * type only guarantees the stored window is a non-null immutable copy. {@code cooldownUntil} uses
  * {@link Instant#EPOCH} as the "not cooling" sentinel, so a plain time comparison
  * ({@code now.isBefore(cooldownUntil)}) is always false for a fresh cell.
+ *
+ * <p>{@code cooldownCause} is the one field that is deliberately nullable: it records <em>which</em>
+ * failure sized the current {@code cooldownUntil}, and a cell that has never cooled has no such
+ * failure to name. It is written only on the transition into {@code COOLING}, never by the later
+ * failures that keep arriving during a cooldown, so it stays the cause of the incident being punished
+ * rather than the newest thing that happened — which is what makes it usable as the key to a decision
+ * (see {@code ResourcePool#isSelectable}). It is meaningful only while the cell is {@code COOLING};
+ * after a recovery it lingers as the previous incident's cause until the next one overwrites it.
+ *
+ * @param cooldownCause the failure type that put this cell into its current cooldown, or {@code null}
+ *     if it has never cooled
  */
 public record ReputationCell(
         ResourceId resourceId,
@@ -44,10 +55,12 @@ public record ReputationCell(
         List<Outcome> window,
         ResourceState state,
         Instant cooldownUntil,
+        FailureType cooldownCause,
         Instant updatedAt) {
 
     /**
-     * @throws NullPointerException if any field, or any element of {@code window}, is null
+     * @throws NullPointerException if any field other than the nullable {@code cooldownCause}, or any
+     *     element of {@code window}, is null
      * @throws IllegalArgumentException if {@code score} is not finite (NaN/Infinity), or either
      *     streak counter ({@code consecutiveFailures}, {@code consecutiveSuccesses}) is negative
      */
@@ -75,7 +88,8 @@ public record ReputationCell(
 
     /** The initial cell for a resource first seen in a context: neutral, healthy, never cooled. */
     public static ReputationCell fresh(ResourceId resourceId, Context context, Instant now) {
-        return new ReputationCell(resourceId, context, 0.0, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, now);
+        return new ReputationCell(
+                resourceId, context, 0.0, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, null, now);
     }
 
     /**
@@ -97,6 +111,7 @@ public record ReputationCell(
         private List<Outcome> window;
         private ResourceState state;
         private Instant cooldownUntil;
+        private FailureType cooldownCause;
         private Instant updatedAt;
 
         private Builder(ReputationCell cell) {
@@ -108,6 +123,7 @@ public record ReputationCell(
             this.window = cell.window;
             this.state = cell.state;
             this.cooldownUntil = cell.cooldownUntil;
+            this.cooldownCause = cell.cooldownCause;
             this.updatedAt = cell.updatedAt;
         }
 
@@ -141,6 +157,12 @@ public record ReputationCell(
             return this;
         }
 
+        /** The failure that sized the cooldown being set; {@code null} for a cell that has never cooled. */
+        public Builder cooldownCause(FailureType cooldownCause) {
+            this.cooldownCause = cooldownCause;
+            return this;
+        }
+
         public Builder updatedAt(Instant updatedAt) {
             this.updatedAt = updatedAt;
             return this;
@@ -156,6 +178,7 @@ public record ReputationCell(
                     window,
                     state,
                     cooldownUntil,
+                    cooldownCause,
                     updatedAt);
         }
     }

@@ -46,8 +46,9 @@ import net.jqwik.api.constraints.LongRange;
  * so the exclusion cannot be satisfied by neither ever firing.
  *
  * <p>The second property attacks the same partition with a moving target: a failure of a different
- * type reported while the cell is already cooling changes which half owns it, without changing the
- * cooldown the first failure sized. The half may flip; both halves claiming it at once may not.
+ * type reported while the cell is already cooling. That failure joins the outcome window without
+ * resizing the cooldown, so it must not move the cell between the halves either — the half is decided
+ * by the cause that sized the cooldown being served, not by whatever arrived most recently (#97).
  *
  * <p>{@code isSelectable} is private, so it is observed the only way a caller can: through
  * {@link ResourcePool#acquire}. With a single registered resource that is faithful —
@@ -114,8 +115,8 @@ class ResourcePoolHalfOpenPropertyTest {
     }
 
     @Property
-    @Label("the partition survives a failure of a different type landing while the cell is already cooling")
-    void aLateFailureMovesTheCellBetweenTheTwoHalvesButNeverIntoBoth(
+    @Label("a failure landing while the cell is already cooling never moves it between the two halves")
+    void aLateFailureLeavesTheCellWithWhicheverMechanismTheCoolingCauseGaveIt(
             @ForAll FailureType cause,
             @ForAll FailureType lateCause,
             @ForAll @LongRange(min = 2, max = 3600 * 200) long offsetSeconds) {
@@ -127,8 +128,8 @@ class ResourcePoolHalfOpenPropertyTest {
         }
         // One second in, still well inside even the shortest cooldown (SLOW: 30s x 2^2 = 2m), an
         // in-flight lease reports a second failure. The engine's "already being punished for this
-        // incident" guard leaves cooldownUntil alone, but the window records it — so which half of the
-        // split owns this cell is decided by lateCause from here on.
+        // incident" guard leaves cooldownUntil alone, and it leaves the recorded cooldownCause alone
+        // too — so lateCause changes the window and nothing else that this split reads.
         clock.set(T0.plusSeconds(1));
         pool.report(RESOURCE, CTX, new Outcome.Failure(lateCause, Duration.ofMillis(1)));
 
@@ -147,11 +148,11 @@ class ResourcePoolHalfOpenPropertyTest {
             assertThat(probeCandidate).as("still cooling, whatever the cause").isFalse();
         } else {
             assertThat(selectable)
-                    .as("past the cooldown the first failure sized, the latest failure decides the half")
-                    .isEqualTo(lateCause == FailureType.BLOCKED);
+                    .as("the cause that sized this cooldown decides the half, whatever landed later")
+                    .isEqualTo(cause == FailureType.BLOCKED);
             assertThat(probeCandidate)
-                    .as("past the cooldown the first failure sized, the latest failure decides the half")
-                    .isEqualTo(lateCause != FailureType.BLOCKED);
+                    .as("the cause that sized this cooldown decides the half, whatever landed later")
+                    .isEqualTo(cause != FailureType.BLOCKED);
         }
     }
 }

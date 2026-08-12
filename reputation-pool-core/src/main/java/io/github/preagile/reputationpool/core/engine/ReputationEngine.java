@@ -37,8 +37,9 @@ import java.util.Objects;
  *   <li>A failure lowers the score and increments the consecutive-failure count, but only pushes the
  *       resource into {@code COOLING} once that count reaches {@code coolAfter} — a single blip does
  *       not cool a healthy resource. While a cooldown is still active, further failures keep moving
- *       the score but never restart the cooldown or repeat the {@code ResourceCooled} event: a
- *       late-arriving result belongs to the incident already being punished, not to a new one.
+ *       the score but never restart the cooldown, rewrite its recorded {@code cooldownCause}, or
+ *       repeat the {@code ResourceCooled} event: a late-arriving result belongs to the incident
+ *       already being punished, not to a new one.
  *   <li>Recovery is success-driven: once the cooldown has expired, a success moves {@code COOLING} to
  *       {@code RECOVERING} (probation), and {@code recoverAfter} consecutive successes — counted from
  *       that moment via the cell's {@code consecutiveSuccesses} streak, so successes observed while
@@ -118,8 +119,13 @@ public final class ReputationEngine {
 
         if (shouldCool(cell, consecutiveFailures, now)) {
             Instant until = now.plus(cooldown.cooldownFor(failure.type(), consecutiveFailures));
-            ReputationCell next =
-                    builder.state(ResourceState.COOLING).cooldownUntil(until).build();
+            // cooldownCause is written on exactly this branch — the one that sizes the cooldown — so it
+            // names the incident being punished rather than the newest failure. Later failures land in
+            // the window but not here, which is what lets the pool layer key a decision on it.
+            ReputationCell next = builder.state(ResourceState.COOLING)
+                    .cooldownUntil(until)
+                    .cooldownCause(failure.type())
+                    .build();
             return new Result(
                     next,
                     List.of(new PoolEvent.ResourceCooled(

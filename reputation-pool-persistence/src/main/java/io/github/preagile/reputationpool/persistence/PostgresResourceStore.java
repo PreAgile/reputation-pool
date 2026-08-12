@@ -203,8 +203,8 @@ public final class PostgresResourceStore implements ResourceStore {
         String insertCell =
                 """
                 INSERT INTO cell (pool_id, resource_kind, resource_value, context, score, consecutive_failures,
-                    consecutive_successes, state, cooldown_until, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""";
+                    consecutive_successes, state, cooldown_until, cooldown_cause, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""";
         String insertOutcome =
                 """
                 INSERT INTO cell_outcome (pool_id, resource_kind, resource_value, context, ordinal, success,
@@ -223,7 +223,8 @@ public final class PostgresResourceStore implements ResourceStore {
                 cellStatement.setInt(7, cell.consecutiveSuccesses());
                 cellStatement.setString(8, cell.state().name());
                 cellStatement.setLong(9, SnapshotMapper.instantToEpochNanos(cell.cooldownUntil()));
-                cellStatement.setLong(10, SnapshotMapper.instantToEpochNanos(cell.updatedAt()));
+                cellStatement.setString(10, SnapshotMapper.cooldownCauseToColumn(cell.cooldownCause()));
+                cellStatement.setLong(11, SnapshotMapper.instantToEpochNanos(cell.updatedAt()));
                 cellStatement.addBatch();
 
                 List<Outcome> window = cell.window();
@@ -306,7 +307,7 @@ public final class PostgresResourceStore implements ResourceStore {
         String sql =
                 """
                 SELECT resource_kind, resource_value, context, score, consecutive_failures,
-                    consecutive_successes, state, cooldown_until, updated_at
+                    consecutive_successes, state, cooldown_until, cooldown_cause, updated_at
                 FROM cell WHERE pool_id = ?""";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             statement.setString(1, poolId);
@@ -325,7 +326,8 @@ public final class PostgresResourceStore implements ResourceStore {
                             windows.getOrDefault(coordinate, List.of()),
                             ResourceState.valueOf(resultSet.getString(7)),
                             SnapshotMapper.epochNanosToInstant(resultSet.getLong(8)),
-                            SnapshotMapper.epochNanosToInstant(resultSet.getLong(9)));
+                            SnapshotMapper.columnToCooldownCause(resultSet.getString(9)),
+                            SnapshotMapper.epochNanosToInstant(resultSet.getLong(10)));
                     cells.put(new CellKey(resource, context), cell);
                 }
             }

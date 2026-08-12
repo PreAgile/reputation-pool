@@ -72,9 +72,21 @@ a probe for the four it can judge, and half-open admission — one real request 
   promote the cell for a site still refusing it. The blast radius needed no new machinery — the lease
   registry already caps it at one in-flight trial, `WeightedRandomSelectionStrategy` gives the
   lowest-scored candidate only its exploration floor, and a failed trial re-cools on the next step of
-  the same backoff curve. The cooling cause is read back from the outcome window the cell already
-  carries, so there is no new domain field and no schema migration; a window holding no failure reads
-  conservatively as "not a block". (#90)
+  the same backoff curve. (#90)
+- **`ReputationCell` gains a `cooldownCause` component** (`reputation-pool-core`) — the `FailureType`
+  that sized the cell's current `cooldownUntil`, `null` for a cell that has never cooled. It is what
+  the half-open/probe split above is keyed on. The split originally re-derived that cause by scanning
+  the outcome window backwards for the newest failure, which is a different value: failures reported
+  while a cell is already `COOLING` are appended to the window without resizing the cooldown, and a
+  full window eventually evicts the causing failure altogether — so a cell cooled by a site block
+  could drift onto the prober's side and be promoted out of `COOLING` by a synthetic `Success`, the
+  exact false recovery the split exists to prevent. The engine now records the cause on the transition
+  that sets the cooldown, and nothing later rewrites it. **Source-incompatible** for callers of
+  `ReputationCell`'s canonical constructor (the `Builder` and `fresh(...)` are unaffected). (#97)
+- **`cell.cooldown_cause`** (`reputation-pool-persistence`, `V6__cell_cooldown_cause.sql`) — an
+  additive nullable `text` column carrying the `FailureType` name, backfilled for existing `COOLING`
+  rows from the newest failure in their stored window, which is exactly the value the old scan read —
+  so an existing checkpoint keeps the ownership decision it already had. (#97)
 
 ## [0.5.0] - 2026-07-22
 

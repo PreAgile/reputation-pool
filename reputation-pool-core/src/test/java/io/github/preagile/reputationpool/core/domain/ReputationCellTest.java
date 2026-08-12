@@ -41,6 +41,7 @@ class ReputationCellTest {
         assertThat(cell.window()).isEmpty();
         assertThat(cell.state()).isEqualTo(ResourceState.HEALTHY);
         assertThat(cell.cooldownUntil()).isEqualTo(Instant.EPOCH); // EPOCH == "not cooling"
+        assertThat(cell.cooldownCause()).isNull(); // null == "never cooled"
         assertThat(cell.updatedAt()).isEqualTo(NOW);
     }
 
@@ -68,10 +69,12 @@ class ReputationCellTest {
                 .consecutiveSuccesses(0)
                 .state(ResourceState.COOLING)
                 .cooldownUntil(until)
+                .cooldownCause(FailureType.BLOCKED)
                 .updatedAt(NOW.plusSeconds(1))
                 .build();
         assertThat(cooled.state()).isEqualTo(ResourceState.COOLING);
         assertThat(cooled.cooldownUntil()).isEqualTo(until);
+        assertThat(cooled.cooldownCause()).isEqualTo(FailureType.BLOCKED);
         assertThat(cooled.consecutiveFailures()).isEqualTo(3);
         assertThat(cooled.score()).isEqualTo(-30.0);
         // identity is preserved across transitions
@@ -97,30 +100,36 @@ class ReputationCellTest {
 
     @Test
     void rejectsNullComponents() {
-        assertThatThrownBy(() ->
-                        new ReputationCell(null, CTX, 0.0, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
+        assertThatThrownBy(() -> new ReputationCell(
+                        null, CTX, 0.0, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, null, NOW))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("resourceId");
-        assertThatThrownBy(
-                        () -> new ReputationCell(RID, CTX, 0.0, 0, 0, null, ResourceState.HEALTHY, Instant.EPOCH, NOW))
+        assertThatThrownBy(() ->
+                        new ReputationCell(RID, CTX, 0.0, 0, 0, null, ResourceState.HEALTHY, Instant.EPOCH, null, NOW))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("window");
-        assertThatThrownBy(() -> new ReputationCell(RID, CTX, 0.0, 0, 0, List.of(), null, Instant.EPOCH, NOW))
+        assertThatThrownBy(() -> new ReputationCell(RID, CTX, 0.0, 0, 0, List.of(), null, Instant.EPOCH, null, NOW))
                 .isInstanceOf(NullPointerException.class)
                 .hasMessageContaining("state");
     }
 
     @Test
+    void acceptsANullCooldownCauseBecauseACellMayNeverHaveCooled() {
+        var cell = new ReputationCell(RID, CTX, 0.0, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, null, NOW);
+        assertThat(cell.cooldownCause()).isNull();
+    }
+
+    @Test
     void rejectsNegativeConsecutiveFailures() {
-        assertThatThrownBy(() ->
-                        new ReputationCell(RID, CTX, 0.0, -1, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
+        assertThatThrownBy(() -> new ReputationCell(
+                        RID, CTX, 0.0, -1, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, null, NOW))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
     @Test
     void rejectsNegativeConsecutiveSuccesses() {
-        assertThatThrownBy(() ->
-                        new ReputationCell(RID, CTX, 0.0, 0, -1, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
+        assertThatThrownBy(() -> new ReputationCell(
+                        RID, CTX, 0.0, 0, -1, List.of(), ResourceState.HEALTHY, Instant.EPOCH, null, NOW))
                 .isInstanceOf(IllegalArgumentException.class);
     }
 
@@ -128,7 +137,7 @@ class ReputationCellTest {
     void rejectsNonFiniteScore() {
         for (double bad : new double[] {Double.NaN, Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY}) {
             assertThatThrownBy(() -> new ReputationCell(
-                            RID, CTX, bad, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, NOW))
+                            RID, CTX, bad, 0, 0, List.of(), ResourceState.HEALTHY, Instant.EPOCH, null, NOW))
                     .isInstanceOf(IllegalArgumentException.class)
                     .hasMessageContaining("finite");
         }

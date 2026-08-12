@@ -160,6 +160,7 @@ class SnapshotMapperPropertyTest {
                 window,
                 cell.state(),
                 SnapshotMapper.epochNanosToInstant(SnapshotMapper.instantToEpochNanos(cell.cooldownUntil())),
+                SnapshotMapper.columnToCooldownCause(SnapshotMapper.cooldownCauseToColumn(cell.cooldownCause())),
                 SnapshotMapper.epochNanosToInstant(SnapshotMapper.instantToEpochNanos(cell.updatedAt())));
     }
 
@@ -196,6 +197,19 @@ class SnapshotMapperPropertyTest {
         Statistics.label("windows").coverage(coverage -> {
             coverage.check("some empty").count(c -> c > 0);
             coverage.check("some non-empty").count(c -> c > 0);
+        });
+
+        // null ("never cooled") is the cooling cause a nullable column is most likely to mishandle, so
+        // prove both sides of it actually appear rather than trusting the generator's weighting
+        if (snapshot.cells().values().stream().anyMatch(cell -> cell.cooldownCause() == null)) {
+            Statistics.label("cooling causes").collect("some never cooled");
+        }
+        if (snapshot.cells().values().stream().anyMatch(cell -> cell.cooldownCause() != null)) {
+            Statistics.label("cooling causes").collect("some cooled");
+        }
+        Statistics.label("cooling causes").coverage(coverage -> {
+            coverage.check("some never cooled").count(c -> c > 0);
+            coverage.check("some cooled").count(c -> c > 0);
         });
     }
 }
