@@ -30,7 +30,11 @@ import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Function;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * The reference {@link RecoveryProbe} for {@code PROXY} resources: a plain {@code java.net.http}
@@ -56,6 +60,15 @@ import java.util.function.Function;
  * -> Optional.ofNullable(map.get(ctx))}, and one target shared by every context is {@code ctx ->
  * Optional.of(uri)}.
  *
+ * <p><strong>A missing target is logged once per context.</strong> The skip is the right behaviour —
+ * a probe that cannot reach the site must not invent an outcome — but on its own it is
+ * indistinguishable from "nothing was due", so an assembly that simply forgot a context would go on
+ * never proactively probing anything cooled in it, silently. The warning fires on the first probe for
+ * each unmapped context and not again: the backstop sweep runs on a short period (30s in the reference
+ * server), and repeating this every sweep would bury the one message worth reading. The set of
+ * already-warned contexts is the only state this probe keeps, and it grows only with contexts that are
+ * actually missing a target — bounded in practice by the assembly's own configuration.
+ *
  * <p>{@link RecoveryScheduler} calls {@link #test} with only a {@link ResourceId} — an opaque value
  * the core never parses (see {@link ProxyEndpoint#toResourceId()}) — so this probe needs a way back
  * to the actual {@code host:port} to dial. That is {@code endpoints}, supplied by the composition
@@ -65,21 +78,26 @@ import java.util.function.Function;
  *
  * <p>Blocking is intentional: {@link RecoveryScheduler} dispatches each probe on its own virtual
  * thread (JEP 491), so a synchronous {@link HttpClient#send} pins nothing. That is also what both
- * resolvers have to survive: this probe holds no state of its own, but {@code endpoints} and
- * {@code targets} are called on every one of those threads, so an assembly must supply resolvers
- * that are safe to call concurrently. The usual ones are — a lambda closing over a map built once at
- * startup and never mutated — but a resolver that rebuilds its mapping at runtime needs to say so in
- * its own implementation; nothing here synchronizes on its behalf.
+ * resolvers have to survive: {@code endpoints} and {@code targets} are called on every one of those
+ * threads, so an assembly must supply resolvers that are safe to call concurrently. The usual ones are
+ * — a lambda closing over a map built once at startup and never mutated — but a resolver that rebuilds
+ * its mapping at runtime needs to say so in its own implementation; nothing here synchronizes on its
+ * behalf.
  */
 public final class HttpProxyRecoveryProbe implements RecoveryProbe {
 
     /** Default budget for connecting and receiving a response before the attempt counts as a timeout. */
     public static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(10);
 
+    private static final Logger LOG = LoggerFactory.getLogger(HttpProxyRecoveryProbe.class);
+
     private final Function<ResourceId, Optional<ProxyEndpoint>> endpoints;
     private final Function<Context, Optional<URI>> targets;
     private final OutcomeClassifier classifier;
     private final Duration timeout;
+    // Probes run concurrently on virtual threads, so the "have we already complained about this
+    // context" check has to be atomic: add() returning true is both the test and the claim.
+    private final Set<Context> contextsWarnedAbout = ConcurrentHashMap.newKeySet();
 
     /**
      * Creates a probe with the default classifier ({@link HttpProxyOutcomeClassifier}) and
@@ -138,6 +156,12 @@ public final class HttpProxyRecoveryProbe implements RecoveryProbe {
         // therefore no selector thread and executor to close again.
         Optional<URI> target = targets.apply(context);
         if (target.isEmpty()) {
+            if (firstProbeMissingATargetFor(context)) {
+                LOG.warn(
+                        "no recovery-probe target configured for context {}; resources cooled in it will not be"
+                                + " proactively probed. Logged once per context.",
+                        context.value());
+            }
             return Optional.empty();
         }
 
@@ -165,5 +189,14 @@ public final class HttpProxyRecoveryProbe implements RecoveryProbe {
                 return Optional.of(classifier.classifyError(e, Duration.ofNanos(System.nanoTime() - startedAtNanos)));
             }
         }
+    }
+
+    /**
+     * Whether this is the first probe to find {@code context} without a target — the once-per-context
+     * decision, kept separate from the logging call so it can be asserted directly. Claiming and
+     * testing in one atomic {@code add} is what makes it once even when many virtual threads race here.
+     */
+    boolean firstProbeMissingATargetFor(Context context) {
+        return contextsWarnedAbout.add(context);
     }
 }

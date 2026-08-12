@@ -32,6 +32,9 @@ import java.net.URI;
 import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -150,6 +153,55 @@ class HttpProxyRecoveryProbeTest {
         // A skip, not a failure — and the request journal proves the proxy was never dialled at all,
         // so an unmapped context costs nothing rather than being reported as a broken resource.
         assertThat(wireMock.getAllServeEvents()).isEmpty();
+    }
+
+    @Test
+    void aMissingTargetIsReportedOncePerContextRatherThanOncePerProbe() {
+        var probe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), ctx -> Optional.empty());
+        var other = new Context("kurly");
+
+        assertThat(probe.firstProbeMissingATargetFor(CTX))
+                .as("the first probe for an unmapped context is the one worth logging")
+                .isTrue();
+        assertThat(probe.firstProbeMissingATargetFor(CTX))
+                .as("the backstop sweep re-probes on a short period; repeating this would bury it")
+                .isFalse();
+        assertThat(probe.firstProbeMissingATargetFor(other))
+                .as("a second missing mapping is its own misconfiguration and must still be reported")
+                .isTrue();
+
+        // the skip itself is unchanged by the reporting: it stays a skip on every probe, not just the
+        // first, and never turns into an invented outcome
+        assertThat(probe.test(resourceId, CTX)).isEmpty();
+        assertThat(probe.test(resourceId, CTX)).isEmpty();
+    }
+
+    @Test
+    void concurrentProbesForOneUnmappedContextReportItExactlyOnce() throws Exception {
+        // Probes run one per virtual thread, so many can find the same missing mapping at once; a
+        // check-then-act on a plain set would let several of them through.
+        var probe = new HttpProxyRecoveryProbe(id -> Optional.of(endpoint), ctx -> Optional.empty());
+        int threads = 32;
+        var start = new CountDownLatch(1);
+        var reported = new AtomicInteger();
+        try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            for (int i = 0; i < threads; i++) {
+                executor.execute(() -> {
+                    try {
+                        start.await();
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                        return;
+                    }
+                    if (probe.firstProbeMissingATargetFor(CTX)) {
+                        reported.incrementAndGet();
+                    }
+                });
+            }
+            start.countDown();
+        }
+
+        assertThat(reported).hasValue(1);
     }
 
     @Test
