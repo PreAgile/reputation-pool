@@ -64,7 +64,12 @@ import java.util.function.Function;
  * {@link Optional#empty()} from {@code endpoints} and, in turn, from {@link #test} — the same skip.
  *
  * <p>Blocking is intentional: {@link RecoveryScheduler} dispatches each probe on its own virtual
- * thread (JEP 491), so a synchronous {@link HttpClient#send} pins nothing.
+ * thread (JEP 491), so a synchronous {@link HttpClient#send} pins nothing. That is also what both
+ * resolvers have to survive: this probe holds no state of its own, but {@code endpoints} and
+ * {@code targets} are called on every one of those threads, so an assembly must supply resolvers
+ * that are safe to call concurrently. The usual ones are — a lambda closing over a map built once at
+ * startup and never mutated — but a resolver that rebuilds its mapping at runtime needs to say so in
+ * its own implementation; nothing here synchronizes on its behalf.
  */
 public final class HttpProxyRecoveryProbe implements RecoveryProbe {
 
