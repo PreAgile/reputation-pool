@@ -17,6 +17,7 @@ package io.github.preagile.reputationpool.prober;
 
 import io.github.preagile.reputationpool.core.domain.CellKey;
 import io.github.preagile.reputationpool.core.domain.Context;
+import io.github.preagile.reputationpool.core.domain.FailureType;
 import io.github.preagile.reputationpool.core.domain.PoolEvent;
 import io.github.preagile.reputationpool.core.domain.ResourceId;
 import io.github.preagile.reputationpool.core.domain.ResourceKind;
@@ -49,8 +50,9 @@ import java.util.random.RandomGenerator;
  * <ul>
  *   <li><b>Event path (fast).</b> As an {@link EventSink}, it sits in a fan-out (e.g.
  *       {@code CompositeEventSink}) next to whatever else consumes {@link PoolEvent}s. On a
- *       {@link PoolEvent.ResourceCooled}, it schedules one probe at {@code until} (plus a small
- *       random jitter, so many resources cooling together do not all get probed in the same instant).
+ *       {@link PoolEvent.ResourceCooled} whose cause is not a {@link FailureType#BLOCKED}, it
+ *       schedules one probe at {@code until} (plus a small random jitter, so many resources cooling
+ *       together do not all get probed in the same instant).
  *   <li><b>Backstop path (safety net).</b> {@link #backstopSweep()}, meant to be invoked periodically
  *       by the caller's own scheduler (the same one that already checkpoints), calls
  *       {@link ResourcePool#dueForRecoveryProbe} and probes anything the event path missed — a
@@ -141,11 +143,19 @@ public final class RecoveryScheduler implements EventSink, AutoCloseable {
      * The event-path trigger: on {@link PoolEvent.ResourceCooled}, schedules a probe at {@code until}.
      * Every other event kind is ignored — this sink only cares about the moment a cell starts cooling.
      *
+     * <p>A cooldown caused by a {@link FailureType#BLOCKED} is skipped, for the reason
+     * {@link ResourcePool#dueForRecoveryProbe} skips it on the backstop path: a block lives in the
+     * relationship between the resource and one site, so a synthetic request cannot judge it, and
+     * half-open admission owns that cell instead. The two paths have to apply the same rule or the
+     * partition is not a partition — this one only reaches the cell sooner. The event already carries
+     * the cause, which is the same value the pool now stores on the cell (#97), so both paths are
+     * reading the same fact rather than two approximations of it.
+     *
      * @param event the fact just emitted by the pool; never null
      */
     @Override
     public void emit(PoolEvent event) {
-        if (event instanceof PoolEvent.ResourceCooled cooled) {
+        if (event instanceof PoolEvent.ResourceCooled cooled && cooled.cause() != FailureType.BLOCKED) {
             scheduleAt(cooled.resource(), cooled.context(), cooled.until());
         }
     }

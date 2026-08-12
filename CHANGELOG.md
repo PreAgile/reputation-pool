@@ -83,6 +83,13 @@ a probe for the four it can judge, and half-open admission — one real request 
   exact false recovery the split exists to prevent. The engine now records the cause on the transition
   that sets the cooldown, and nothing later rewrites it. **Source-incompatible** for callers of
   `ReputationCell`'s canonical constructor (the `Builder` and `fresh(...)` are unaffected). (#97)
+- **`RecoveryScheduler`'s event path applies the same cause filter as the backstop**
+  (`reputation-pool-prober`) — a `ResourceCooled` whose cause is `BLOCKED` no longer schedules a
+  synthetic probe. `dueForRecoveryProbe` had excluded that cell since #90, but `emit` scheduled off
+  every cooling event, so any assembly wiring the scheduler as an event sink (including
+  `AdvisorServer`) probed exactly the cell the split says only real traffic can judge — and a
+  synthetic `Success` promoted it out of `COOLING`. The two paths now enforce one partition rather
+  than one enforcing it and the other racing it. (#99)
 - **`cell.cooldown_cause`** (`reputation-pool-persistence`, `V6__cell_cooldown_cause.sql`) — an
   additive nullable `text` column carrying the `FailureType` name, backfilled for existing `COOLING`
   rows from the newest failure in their stored window, which is exactly the value the old scan read —
