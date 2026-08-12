@@ -106,6 +106,10 @@ class PostgresResourceStoreIT {
                         new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(50))),
                 ResourceState.COOLING,
                 Instant.parse("2026-07-12T10:00:00Z"),
+                // Deliberately not the window's newest failure (BLOCKED, above): the cooling cause is its
+                // own stored column, so a round-trip that re-derived it from the window would fail here.
+                // The healthy cell above carries the other case, a null cause for a cell never cooled.
+                FailureType.TIMEOUT,
                 // updatedAt carries a sub-microsecond nanosecond fraction that timestamptz would truncate.
                 Instant.ofEpochSecond(1_752_312_600L, 123_456_789));
 

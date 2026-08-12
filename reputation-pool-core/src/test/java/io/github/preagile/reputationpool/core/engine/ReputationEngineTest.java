@@ -45,6 +45,7 @@ class ReputationEngineTest {
     private static final Instant T0 = Instant.parse("2026-07-07T00:00:00Z");
     private static final Outcome SUCCESS = new Outcome.Success(Duration.ofMillis(100));
     private static final Outcome TIMEOUT = new Outcome.Failure(FailureType.TIMEOUT, Duration.ofSeconds(1));
+    private static final Outcome BLOCKED = new Outcome.Failure(FailureType.BLOCKED, Duration.ofMillis(200));
 
     private static final int COOL_AFTER = 3;
     private static final int RECOVER_AFTER = 2;
@@ -99,6 +100,9 @@ class ReputationEngineTest {
         assertThat(cooledCell.state()).isEqualTo(ResourceState.COOLING);
         assertThat(cooledCell.consecutiveFailures()).isEqualTo(COOL_AFTER);
         assertThat(cooledCell.cooldownUntil()).isAfter(cooledCell.updatedAt());
+        // the cause is recorded on the cell, not only on the event: the pool layer decides which
+        // recovery mechanism owns this cell from it long after the event has been consumed
+        assertThat(cooledCell.cooldownCause()).isEqualTo(FailureType.TIMEOUT);
         assertThat(result.events()).hasSize(1);
         assertThat(result.events().getFirst()).isInstanceOfSatisfying(PoolEvent.ResourceCooled.class, cooled -> {
             assertThat(cooled.resource()).isEqualTo(RID);
@@ -131,6 +135,29 @@ class ReputationEngineTest {
         // the failure is still evidence: score and streak keep tracking it
         assertThat(result.cell().score()).isLessThan(cooled.score());
         assertThat(result.cell().consecutiveFailures()).isEqualTo(cooled.consecutiveFailures() + 1);
+    }
+
+    @Test
+    void failureOfADifferentTypeDuringActiveCooldownDoesNotRewriteTheCoolingCause() {
+        var engine = testEngine();
+        var cooled = coolDownAt(engine, BLOCKED);
+        var duringCooldown = cooled.updatedAt().plusSeconds(1);
+        // The cell is being punished for the block; a transport failure reported by a request that was
+        // already in flight belongs to that same incident. It joins the window, but the cause that sized
+        // the cooldown is what the pool layer keys its half-open/probe split on, so it must not move.
+        var result = engine.apply(cooled, TIMEOUT, duringCooldown);
+        assertThat(result.cell().cooldownCause()).isEqualTo(FailureType.BLOCKED);
+        assertThat(result.cell().window().getLast()).isEqualTo(TIMEOUT);
+    }
+
+    @Test
+    void failureAfterCooldownExpiryRecordsTheNewCause() {
+        var engine = testEngine();
+        var cooled = coolDownAt(engine, BLOCKED);
+        // past the expiry the guard has lapsed, so this failure really is a new incident and owns the
+        // cooldown it sizes — the cause moves with it
+        var result = engine.apply(cooled, TIMEOUT, cooled.cooldownUntil().plusSeconds(1));
+        assertThat(result.cell().cooldownCause()).isEqualTo(FailureType.TIMEOUT);
     }
 
     @Test
@@ -343,10 +370,15 @@ class ReputationEngineTest {
 
     // Drives a fresh cell to COOLING by applying COOL_AFTER consecutive failures.
     private static ReputationCell coolDownAt(ReputationEngine engine) {
+        return coolDownAt(engine, TIMEOUT);
+    }
+
+    // ... with a chosen failure, for the tests that care which cause sized the cooldown.
+    private static ReputationCell coolDownAt(ReputationEngine engine, Outcome failure) {
         var cell = fresh();
         var now = T0;
         for (int i = 0; i < COOL_AFTER; i++) {
-            cell = engine.apply(cell, TIMEOUT, now).cell();
+            cell = engine.apply(cell, failure, now).cell();
             now = now.plusSeconds(1);
         }
         return cell;

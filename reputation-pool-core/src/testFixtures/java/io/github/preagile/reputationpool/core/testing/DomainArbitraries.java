@@ -118,9 +118,15 @@ public final class DomainArbitraries {
         return Arbitraries.oneOf(successes, failures);
     }
 
+    /** Cooling causes over every {@link FailureType}, with the "never cooled" null weighted in. */
+    public static Arbitrary<FailureType> cooldownCauses() {
+        return Arbitraries.of(FailureType.values()).injectNull(0.3);
+    }
+
     /**
      * Reputation cells over every {@link ResourceState}, with the {@link Instant#EPOCH} "not cooling"
-     * sentinel weighted in and outcome windows that are empty, partial, or full.
+     * sentinel and the {@code null} "never cooled" cause weighted in, and outcome windows that are
+     * empty, partial, or full.
      */
     public static Arbitrary<ReputationCell> reputationCells() {
         Arbitrary<Double> scores = Arbitraries.doubles().between(-100.0, 100.0);
@@ -143,9 +149,24 @@ public final class DomainArbitraries {
                         Arbitraries.of(ResourceState.values()),
                         cooldowns)
                 .as((resource, context, score, failures, successes, window, state, cooldownUntil) -> new ReputationCell(
-                        resource, context, score, failures, successes, window, state, cooldownUntil, Instant.EPOCH))
-                .flatMap(cell -> instants()
-                        .map(updatedAt -> cell.toBuilder().updatedAt(updatedAt).build()));
+                        resource,
+                        context,
+                        score,
+                        failures,
+                        successes,
+                        window,
+                        state,
+                        cooldownUntil,
+                        null,
+                        Instant.EPOCH))
+                // Combinators.combine tops out at eight arbitraries, so the last two fields are layered on
+                // afterwards. cooldownCause keeps its null ("never cooled") case weighted in: null is the
+                // value a store is most likely to mishandle.
+                .flatMap(cell -> Combinators.combine(cooldownCauses(), instants())
+                        .as((cause, updatedAt) -> cell.toBuilder()
+                                .cooldownCause(cause)
+                                .updatedAt(updatedAt)
+                                .build()));
     }
 
     /**

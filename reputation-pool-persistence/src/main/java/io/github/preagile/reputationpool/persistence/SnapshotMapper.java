@@ -40,6 +40,10 @@ import java.time.Instant;
  *   <li><b>Outcome window.</b> A {@link Outcome} becomes a flat {@link OutcomeRow} (and back), so a
  *       cell's window can be stored one row per outcome with no JSON library. Latency is carried as
  *       whole nanoseconds so sub-millisecond latencies survive the trip.
+ *   <li><b>Cooling cause.</b> A cell that has never cooled has no {@code cooldownCause}; that absence is
+ *       SQL {@code NULL}, the same convention {@code cell_outcome.failure_type} uses for a
+ *       {@code Success}. Enums cross the boundary as their {@code name()}, not their ordinal, so a
+ *       stored row survives the enum gaining a constant.
  * </ul>
  */
 final class SnapshotMapper {
@@ -72,6 +76,19 @@ final class SnapshotMapper {
     static Outcome toOutcome(boolean success, String failureType, long latencyNs) {
         Duration latency = Duration.ofNanos(latencyNs);
         return success ? new Outcome.Success(latency) : new Outcome.Failure(FailureType.valueOf(failureType), latency);
+    }
+
+    /**
+     * The {@code cooldown_cause} column for a cell: the {@link FailureType} name, or {@code null} for a
+     * cell that has never cooled.
+     */
+    static String cooldownCauseToColumn(FailureType cause) {
+        return cause == null ? null : cause.name();
+    }
+
+    /** A cell's cooling cause from its {@code cooldown_cause} column — the inverse of the above. */
+    static FailureType columnToCooldownCause(String cause) {
+        return cause == null ? null : FailureType.valueOf(cause);
     }
 
     /**

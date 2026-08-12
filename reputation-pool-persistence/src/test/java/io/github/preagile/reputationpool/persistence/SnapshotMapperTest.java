@@ -145,6 +145,28 @@ class SnapshotMapperTest {
     }
 
     @Nested
+    @DisplayName("cooling cause maps to the cooldown_cause column")
+    class CooldownCause {
+
+        @Test
+        @DisplayName("a cell that has never cooled maps to NULL and back to null")
+        void neverCooledIsNull() {
+            assertThat(SnapshotMapper.cooldownCauseToColumn(null)).isNull();
+            assertThat(SnapshotMapper.columnToCooldownCause(null)).isNull();
+        }
+
+        @Test
+        @DisplayName("every failure type round-trips by name, not by ordinal")
+        void everyCauseRoundTrips() {
+            for (FailureType cause : FailureType.values()) {
+                String column = SnapshotMapper.cooldownCauseToColumn(cause);
+                assertThat(column).isEqualTo(cause.name());
+                assertThat(SnapshotMapper.columnToCooldownCause(column)).isEqualTo(cause);
+            }
+        }
+    }
+
+    @Nested
     @DisplayName("plain instant columns round-trip as epoch-nanoseconds")
     class PlainInstant {
 
