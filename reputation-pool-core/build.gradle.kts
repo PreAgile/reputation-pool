@@ -70,7 +70,7 @@ configurations["lincheckTestRuntimeOnly"].extendsFrom(configurations.testRuntime
 
 dependencies {
     // core has zero runtime dependencies (JDK only); everything below is test scope
-    testImplementation(platform("org.junit:junit-bom:6.1.2"))
+    testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("net.jqwik:jqwik:1.10.1")
@@ -78,7 +78,7 @@ dependencies {
     // DomainArbitraries returns jqwik Arbitrary types from testFixtures, so the dependency is part
     // of the fixtures' API. In-build only: the testFixtures variants are skipped from publication.
     testFixturesApi("net.jqwik:jqwik:1.10.1")
-    testImplementation("com.tngtech.archunit:archunit-junit5:1.4.2")
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.5.0")
     // ArchUnit pulls in slf4j-api with no provider on the test classpath, so every run prints the
     // "No SLF4J providers were found" NOP warning. slf4j-nop is that provider (a no-op sink).
     testRuntimeOnly("org.slf4j:slf4j-nop:2.0.18")
@@ -89,7 +89,7 @@ dependencies {
 
     // Linearizability checking for the concurrent facade (LeaseRegistry, ResourcePool).
     // slf4j-nop is inherited from testRuntimeOnly above, silencing Lincheck's slf4j warning too.
-    "lincheckTestImplementation"("org.jetbrains.lincheck:lincheck:3.6")
+    "lincheckTestImplementation"("org.jetbrains.lincheck:lincheck:3.7")
 }
 
 tasks.test {

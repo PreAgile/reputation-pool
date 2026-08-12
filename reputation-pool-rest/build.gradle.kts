@@ -43,12 +43,12 @@ dependencies {
     // free to run a different Jackson version, and swapping the codec later breaks no one.
     implementation("com.fasterxml.jackson.core:jackson-databind:2.22.1")
 
-    testImplementation(platform("org.junit:junit-bom:6.1.2"))
+    testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("net.jqwik:jqwik:1.10.1")
     testImplementation("org.assertj:assertj-core:3.27.7")
-    testImplementation("com.tngtech.archunit:archunit-junit5:1.4.2")
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.5.0")
     // Shared domain generators from core (DomainArbitraries) instead of a per-module copy.
     testImplementation(testFixtures(project(":reputation-pool-core")))
 
