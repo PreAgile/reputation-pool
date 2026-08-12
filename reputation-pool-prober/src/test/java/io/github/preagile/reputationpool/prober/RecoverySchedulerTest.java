@@ -311,7 +311,20 @@ class RecoverySchedulerTest {
         clock.set(NOW.plus(TINY_COOLDOWN).plusMillis(1));
 
         var invocations = new ConcurrentHashMap<ResourceId, AtomicInteger>();
+        // Holds every probe until both sweeps have finished scheduling, so the sweeps genuinely
+        // overlap. Without it the two are only racing by luck: a probe that finishes before the second
+        // sweep reaches its resource frees the key in `dispatch`'s finally, and the second sweep then
+        // schedules that resource again — correct behaviour (dedupe covers a window, not all time),
+        // but it would make this assertion a coin flip on a loaded machine rather than a statement
+        // about dedupe. Same reasoning as the far-future `until` in the concurrent-emit test above.
+        var bothSweepsScheduled = new CountDownLatch(1);
         RecoveryProbe counting = (resource, context) -> {
+            try {
+                bothSweepsScheduled.await();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IllegalStateException(e);
+            }
             invocations.computeIfAbsent(resource, r -> new AtomicInteger()).incrementAndGet();
             return Optional.of(success());
         };
@@ -323,7 +336,11 @@ class RecoverySchedulerTest {
             sweeper.execute(scheduler::backstopSweep);
             sweeper.execute(scheduler::backstopSweep);
             sweeper.shutdown();
-            assertThat(sweeper.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+            try {
+                assertThat(sweeper.awaitTermination(2, TimeUnit.SECONDS)).isTrue();
+            } finally {
+                bothSweepsScheduled.countDown(); // never leave a probe thread parked, even on failure
+            }
 
             awaitTrue(
                     () -> resources.stream().allMatch(id -> stateOf(pool, id, CTX) == ResourceState.HEALTHY),
