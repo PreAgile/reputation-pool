@@ -39,7 +39,7 @@ dependencies {
     // interface is part of this module's public API surface, so it is api, not implementation.
     api(project(":reputation-pool-prober"))
     // Adapters may use frameworks (core may not). SLF4J is the only runtime dependency the demo needs.
-    implementation("org.slf4j:slf4j-api:2.0.18")
+    implementation("org.slf4j:slf4j-api:2.0.19")
 
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -54,7 +54,7 @@ dependencies {
     // Used programmatically (WireMockServer), not via its JUnit extension, to stay off the JUnit version.
     testImplementation("org.wiremock:wiremock:3.13.2")
     // A no-op SLF4J provider so the logging EventSink under test prints nothing and no NOP warning fires.
-    testRuntimeOnly("org.slf4j:slf4j-nop:2.0.18")
+    testRuntimeOnly("org.slf4j:slf4j-nop:2.0.19")
 
     // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik), same version as core.
     pitest("org.pitest:pitest-junit5-plugin:1.2.3")

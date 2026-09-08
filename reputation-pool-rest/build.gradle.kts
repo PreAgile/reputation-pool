@@ -41,7 +41,7 @@ dependencies {
     // implementation, not api: JSON encoding is an internal choice of this module, confined to the
     // Json codec class. Keeping it off the consumer's compile classpath means a downstream host is
     // free to run a different Jackson version, and swapping the codec later breaks no one.
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.1")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.2")
 
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
