@@ -41,14 +41,14 @@ dependencies {
     // implementation, not api: JSON encoding is an internal choice of this module, confined to the
     // Json codec class. Keeping it off the consumer's compile classpath means a downstream host is
     // free to run a different Jackson version, and swapping the codec later breaks no one.
-    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.1")
+    implementation("com.fasterxml.jackson.core:jackson-databind:2.22.3")
 
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    testImplementation("net.jqwik:jqwik:1.10.1")
+    testImplementation("net.jqwik:jqwik:1.10.2")
     testImplementation("org.assertj:assertj-core:3.27.7")
-    testImplementation("com.tngtech.archunit:archunit-junit5:1.5.0")
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.5.1")
     // Shared domain generators from core (DomainArbitraries) instead of a per-module copy.
     testImplementation(testFixtures(project(":reputation-pool-core")))
 

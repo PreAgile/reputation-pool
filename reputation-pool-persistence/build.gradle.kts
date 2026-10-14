@@ -52,16 +52,16 @@ dependencies {
 
     // Plain JDBC only — no Spring, JPA, or Hibernate. The PostgreSQL driver and Flyway (schema
     // migrations) are the module's only runtime dependencies.
-    implementation("org.postgresql:postgresql:42.7.13")
-    implementation("org.flywaydb:flyway-core:13.2.0")
-    runtimeOnly("org.flywaydb:flyway-database-postgresql:13.2.0")
+    implementation("org.postgresql:postgresql:42.7.14")
+    implementation("org.flywaydb:flyway-core:13.10.0")
+    runtimeOnly("org.flywaydb:flyway-database-postgresql:13.10.0")
 
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
     testImplementation("org.assertj:assertj-core:3.27.7")
     // Property tests for the audit mapper's row<->event bijection (same version as core/server).
-    testImplementation("net.jqwik:jqwik:1.10.1")
+    testImplementation("net.jqwik:jqwik:1.10.2")
     // Shared test helpers from core (SettableClock) instead of a per-module copy.
     testImplementation(testFixtures(project(":reputation-pool-core")))
 

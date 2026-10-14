@@ -31,7 +31,7 @@ mavenPublishing {
 
 // Matches the reputation-pool-grpc baseline so the reference host runs on the same gRPC transport
 // version as the published stubs.
-val grpcVersion = "1.83.1"
+val grpcVersion = "1.84.2"
 
 dependencies {
     // The server ring depends inward on the pure core; the dependency arrow never points the other way.
@@ -48,9 +48,9 @@ dependencies {
     // The composition root wires the persistence adapter (a ResourceStore) into the pool's lifecycle.
     // Versions match the persistence module so the driver/Flyway resolve to one artifact each.
     implementation(project(":reputation-pool-persistence"))
-    implementation("org.postgresql:postgresql:42.7.13")
-    implementation("org.flywaydb:flyway-core:13.2.0")
-    runtimeOnly("org.flywaydb:flyway-database-postgresql:13.2.0")
+    implementation("org.postgresql:postgresql:42.7.14")
+    implementation("org.flywaydb:flyway-core:13.10.0")
+    runtimeOnly("org.flywaydb:flyway-database-postgresql:13.10.0")
 
     // A concrete transport is only needed to actually run/serve; the grpc module brings the stub API.
     runtimeOnly("io.grpc:grpc-netty-shaded:$grpcVersion")
@@ -60,7 +60,7 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    testImplementation("net.jqwik:jqwik:1.10.1")
+    testImplementation("net.jqwik:jqwik:1.10.2")
     testImplementation("org.assertj:assertj-core:3.27.7")
     // Shared test helpers from core (SettableClock) instead of per-module copies.
     testImplementation(testFixtures(project(":reputation-pool-core")))

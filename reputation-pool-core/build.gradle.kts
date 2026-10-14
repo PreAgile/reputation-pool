@@ -73,15 +73,15 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    testImplementation("net.jqwik:jqwik:1.10.1")
+    testImplementation("net.jqwik:jqwik:1.10.2")
     testImplementation("org.assertj:assertj-core:3.27.7")
     // DomainArbitraries returns jqwik Arbitrary types from testFixtures, so the dependency is part
     // of the fixtures' API. In-build only: the testFixtures variants are skipped from publication.
-    testFixturesApi("net.jqwik:jqwik:1.10.1")
-    testImplementation("com.tngtech.archunit:archunit-junit5:1.5.0")
+    testFixturesApi("net.jqwik:jqwik:1.10.2")
+    testImplementation("com.tngtech.archunit:archunit-junit5:1.5.1")
     // ArchUnit pulls in slf4j-api with no provider on the test classpath, so every run prints the
     // "No SLF4J providers were found" NOP warning. slf4j-nop is that provider (a no-op sink).
-    testRuntimeOnly("org.slf4j:slf4j-nop:2.0.18")
+    testRuntimeOnly("org.slf4j:slf4j-nop:2.0.20")
 
     // Teaches PIT to drive the JUnit Platform (Jupiter + jqwik run on it). 1.2.3 is the
     // current release and requires pitest core >= 1.19.4, satisfied by the version below.
