@@ -4,7 +4,7 @@ plugins {
     `java-library`
     id("com.diffplug.spotless")
     // Generates the protobuf message classes and the gRPC service stubs from src/main/proto.
-    id("com.google.protobuf") version "0.10.0"
+    id("com.google.protobuf") version "0.10.1"
     // On-demand mutation testing (ratchet policy: CONTRIBUTING.md). 1.19.0 matches core.
     id("info.solidsoft.pitest") version "1.19.0"
     // Version + apply-false live at the root (shared build service); applied here without a version.
@@ -29,7 +29,7 @@ repositories {
 // (e.g. via a Spring gRPC starter) can still consume these stubs as-is. 3.25.8 is the current 3.25.x
 // patch: it carries the CVE-2024-7254 fix (unbounded-recursion DoS on untrusted messages, fixed in
 // 3.25.5) and matches the protobuf-java that grpc-protobuf 1.82.2 pulls in transitively.
-val grpcVersion = "1.83.1"
+val grpcVersion = "1.85.1"
 val protobufVersion = "3.25.9"
 
 // Central target, signing, and the shared POM boilerplate come from the root subprojects block; only
@@ -63,7 +63,7 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:6.1.3"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
-    testImplementation("net.jqwik:jqwik:1.10.1")
+    testImplementation("net.jqwik:jqwik:1.10.2")
     testImplementation("org.assertj:assertj-core:3.27.7")
     // Shared test helpers from core (SettableClock) instead of a per-module copy.
     testImplementation(testFixtures(project(":reputation-pool-core")))
